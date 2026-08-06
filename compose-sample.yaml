@@ -1,3 +1,25 @@
 services:
   valkey:
     image: valkey/valkey:8.0.1-alpine
+  db:
+    image: postgres:17-alpine
+    environment:
+    - POSTGRES_PASSWORD=postgres
+  worker: 
+    build: ./worker
+    environment:
+    - POSTGRESQL_CONNECTION_STRING=Host=db;Username=postgres;Password=postgres;Database=postgres
+    - REDIS_CONNECTION_STRING=valkey:6379
+  vote:
+    build: ./vote
+    ports:
+    - "8080:80"
+    environment:
+    - REDIS_CONNECTION_STRING=redis://valkey:6379
+  result:
+    build: ./result
+    ports:
+    - "8081:4000"
+    environment:
+    - POSTGRESQL_CONNECTION_STRING=postgres://postgres:postgres@db:5432/postgres
+  
