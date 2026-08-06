@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# pre-merge-commit — safety net for the reviewer/docwriter workflow (see CLAUDE.md).
+#
+# What this CAN verify mechanically: that JOURNAL.md was actually updated on the
+# branch being merged (a proxy for "docwriter ran"). What it CANNOT verify: whether
+# the `reviewer` sub-agent actually reviewed the diff and approved it — that's an
+# LLM judgment call, not something a shell script can check. Enforcing that part
+# stays a workflow discipline for Claude Code (see CLAUDE.md), not a hook guarantee.
+#
+# Note: pre-merge-commit does NOT fire on fast-forward merges. Always merge with
+# --no-ff so this hook actually runs: git merge --no-ff feature/xxx
+
+# No `pipefail`: `grep -q` exits on its first match and SIGPIPEs `git diff`, which
+# would make a successful check look like a failure.
+set -eu
+
+current_branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "HEAD")
+
+if [ "$current_branch" != "dev" ]; then
+  # Only enforce this on merges INTO dev.
+  exit 0
+fi
+
+# Do NOT read .git/MERGE_HEAD here: git only writes it when a merge stops
+# (conflict, --no-commit). On a clean merge it is absent, so any check based on
+# it silently passes. At pre-merge-commit time the merge result is already
+# staged, so compare the index against HEAD instead.
+if git diff --cached --name-only HEAD | grep -qx "JOURNAL.md"; then
+  echo "pre-merge-commit: JOURNAL.md updated on the incoming branch — OK."
+  exit 0
+else
+  echo ""
+  echo "BLOCKED: JOURNAL.md was not updated on this branch."
+  echo "Run the docwriter sub-agent (.claude/agents/docwriter.md) before merging into dev."
+  echo "If reviewer flagged anything, resolve it first (.claude/agents/reviewer.md)."
+  echo ""
+  exit 1
+fi
