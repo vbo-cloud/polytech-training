@@ -1,5 +1,6 @@
-Dockerfile
 .venv
 __pycache__
 voting-app.service
-compose.yaml
+
+# Machine-local Claude Code settings — agents/ and skills/ are tracked.
+.claude/settings.local.json
