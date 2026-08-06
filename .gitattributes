@@ -1,0 +1,5 @@
+# Git hooks and shell scripts must keep LF endings. Checked out with CRLF under
+# Windows (core.autocrlf=true), the shebang reads as "bash\r" — no such program —
+# and Git silently skips the hook instead of reporting an error.
+.githooks/** text eol=lf
+*.sh text eol=lf
