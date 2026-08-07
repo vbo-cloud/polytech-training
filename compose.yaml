@@ -1,0 +1,48 @@
+services:
+  valkey:
+    image: valkey/valkey:8.0.1-alpine
+  db:
+    image: postgres:17-alpine
+    environment:
+      - POSTGRES_PASSWORD=postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # On a cold start postgres runs initdb before accepting connections, which
+    # regularly takes longer than result's 3-attempt retry budget.
+    # -h forces the check over TCP: the entrypoint first brings up a temporary
+    # socket-only server, and pg_isready without -h reports READY against it
+    # while port 5432 still refuses connections.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+  worker:
+    build: ./worker
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      - POSTGRESQL_CONNECTION_STRING=Host=db;Username=postgres;Password=postgres;Database=postgres
+      - REDIS_CONNECTION_STRING=valkey:6379
+  vote:
+    build: ./vote
+    ports:
+      - "8080:80"
+    environment:
+      - REDIS_CONNECTION_STRING=redis://valkey:6379
+  result:
+    build: ./result
+    # result gives up after 3 attempts and exits, and never retries once booted.
+    # depends_on only covers startup, so restart also covers a later db outage.
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "8081:4000"
+    environment:
+      - POSTGRESQL_CONNECTION_STRING=postgres://postgres:postgres@db:5432/postgres
+
+volumes:
+  pgdata:
