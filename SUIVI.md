@@ -17,8 +17,11 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 
 - [x] Écrire `vote/Dockerfile` (Python/Flask)
 - [x] Écrire `result/Dockerfile` (Node.js/Express)
-- [x] Compléter `compose-sample.yaml` (5 services reliés : valkey, db, vote, worker, result)
-- [x] Résilience au démarrage de `db` (retry applicatif déjà présent dans `worker/Program.cs`, testé et confirmé — pas besoin de healthcheck compose en plus)
+- [x] Compléter `compose.yaml` (5 services reliés : valkey, db, vote, worker, result)
+- [x] Résilience au démarrage de `db` : healthcheck `pg_isready` sur `db`, `worker` et `result` en `depends_on: service_healthy`
+  - Décision initiale révisée : « le retry applicatif du worker suffit » ne valait que pour le worker, qui boucle indéfiniment. `result` abandonne après 3 tentatives puis `exit(1)`, et mourait au premier démarrage à froid pendant l'`initdb` de postgres.
+- [x] Multi-stage sur `worker/Dockerfile` (SDK pour compiler, `runtime:8.0` pour exécuter) — 1,29 Go → 291 Mo
+- [x] `.dockerignore` sur les trois services
 - [x] Vérifier le flux complet en local : vote → valkey → worker → db → result — **stack complète fonctionnelle**
 
 ## Sprint 1.5 — Objectif week-end (avant mardi)

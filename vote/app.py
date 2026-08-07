@@ -29,7 +29,10 @@ def get_redis():
                 g.redis = redis.from_url(redis_connection_string)
                 g.redis.ping()
                 break
-            except ConnectionError as e:
+            # redis raises its own ConnectionError, which shares the builtin's
+            # name but not its ancestry — the bare name never matched. Its
+            # TimeoutError is a sibling, not a subclass, so it needs listing too.
+            except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError) as e:
                 if attempt == max_retries - 1:
                     raise
                 app.logger.warning(

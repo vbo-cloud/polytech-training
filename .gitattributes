@@ -3,3 +3,10 @@
 # and Git silently skips the hook instead of reporting an error.
 .githooks/** text eol=lf
 *.sh text eol=lf
+
+# Same reasoning, pre-emptively: CRLF is harmless in today's Dockerfiles but bites
+# on the first RUN line continuation, heredoc or entrypoint script.
+Dockerfile* text eol=lf
+.dockerignore text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

@@ -1,0 +1,8 @@
+# A host-built node_modules would overwrite the one npm ci just installed —
+# including pg's native bindings, compiled for the host OS, not the image.
+node_modules
+npm-debug.log
+.git
+.gitignore
+Dockerfile
+.dockerignore
