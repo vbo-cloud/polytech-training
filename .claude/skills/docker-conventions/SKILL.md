@@ -5,7 +5,7 @@ description: Conventions expertes pour tout Dockerfile ou fichier docker-compose
 
 # Conventions Docker — projet polytech-training
 
-Ces règles viennent en bonne partie de vraies erreurs corrigées pendant le développement de ce projet (`vote/Dockerfile`, `result/Dockerfile`, `compose-sample.yaml`) — pas de théorie abstraite.
+Ces règles viennent en bonne partie de vraies erreurs corrigées pendant le développement de ce projet (`vote/Dockerfile`, `result/Dockerfile`, `compose.yaml`) — pas de théorie abstraite.
 
 ## Ordre des instructions (cache de layers)
 
@@ -22,7 +22,7 @@ COPY . .
 COPY . .
 RUN pip install -r requirements.txt
 ```
-`worker/Dockerfile` (fourni par Avisto) ne suit pas cette règle — connu, corrigible en Sprint 2.
+`worker/Dockerfile` (fourni par Avisto) ne suivait pas cette règle — corrigé en Sprint 1.
 
 ## WORKDIR : le fixer une seule fois, tout en haut
 
@@ -61,7 +61,7 @@ WORKDIR /app
 COPY --from=build /app .
 ENTRYPOINT ["dotnet", "Worker.dll"]
 ```
-Pourquoi : l'image finale ne contient pas le compilateur/SDK — plus petite, moins de surface d'attaque en production. `worker/Dockerfile` actuel est single-stage (connu, backlog).
+Pourquoi : l'image finale ne contient pas le compilateur/SDK — plus petite, moins de surface d'attaque en production. Appliqué à `worker/Dockerfile` en Sprint 1 : 1,29 Go → 291 Mo. Vérifier avant de basculer sur `runtime:8.0` que le projet n'est pas un `Microsoft.NET.Sdk.Web` et ne référence aucun package ASP.NET — sinon il faut `aspnet:8.0`.
 
 ## Reproductibilité de l'installation des dépendances
 
@@ -70,12 +70,27 @@ Pourquoi : l'image finale ne contient pas le compilateur/SDK — plus petite, mo
 
 ## `.dockerignore`
 
-Absent actuellement dans ce repo — à ajouter. Sans lui, `COPY . .` embarque `node_modules/`, `.git/`, fichiers locaux non pertinents dans le contexte de build, ce qui ralentit le build et grossit l'image inutilement.
+Un par service depuis le Sprint 1 (`vote/`, `result/`, `worker/`). Sans lui, `COPY . .` embarque `node_modules/`, `.git/`, fichiers locaux non pertinents dans le contexte de build, ce qui ralentit le build et grossit l'image inutilement.
+
+Pire que « inutile » : un `node_modules/` construit sur l'hôte **écrase silencieusement** celui que `npm ci` vient d'installer dans l'image. Pour `result`, ça fait atterrir les bindings natifs de `pg` compilés pour Windows dans une image Linux.
 
 ## Compose : `ports:` vs réseau interne
 
 - `ports:` sert uniquement à exposer un service vers la machine hôte (accès navigateur/Windows). Deux containers du même compose se joignent directement via le nom du service, sans jamais passer par `ports:`.
 - N'ajouter `ports:` que si quelque chose *en dehors* de Docker doit atteindre ce service directement.
+
+## Healthcheck et `depends_on` : ne pas se fier au retry applicatif
+
+`depends_on` sans `condition` n'attend que le *démarrage* du conteneur, pas sa disponibilité. Vérifier la politique de retry de **chaque** consommateur avant de conclure qu'un healthcheck est superflu : dans ce projet, `worker` boucle indéfiniment mais `result` abandonne après 3 tentatives puis `exit(1)`. Une seule des deux apps tolérait l'attente.
+
+```yaml
+db:
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U postgres -h 127.0.0.1"]
+```
+Le `-h 127.0.0.1` n'est pas décoratif : l'entrypoint de l'image `postgres` démarre d'abord un serveur **temporaire socket-only** pour exécuter `initdb` et les scripts de `/docker-entrypoint-initdb.d`. Sans `-h`, `pg_isready` passe par la socket Unix et répond READY alors que le port TCP 5432 refuse encore les connexions. La fenêtre est courte sur une base vide, mais s'allonge à plusieurs secondes dès qu'un script d'init existe.
+
+Rappel : `depends_on` ne couvre que le démarrage. Pour une app qui sort en erreur sur une coupure ultérieure, ajouter aussi `restart: unless-stopped`.
 
 ## Format des variables d'environnement en syntaxe liste YAML
 
