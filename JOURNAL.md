@@ -54,7 +54,7 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 
 ## #2 — feature/impact-analysis-rule
 
-**Contexte avant** : `feature/dockerfiles` a demandé deux passes du sous-agent `reviewer`, et chaque passe a révélé un problème créé par le correctif précédent. Cas le plus net : `vote` déplacé du port 80 vers 8000 pour tourner en non-root, changement totalement masqué en local par le mapping `ports: "8080:8000"` de compose, et rien d'autre dans le repo n'avait été vérifié. C'est Vincent qui a repéré le manque, pas le workflow.
+**Contexte avant** : `feature/dockerfiles` a demandé deux passes du sous-agent `reviewer`, et chaque passe a révélé un problème créé par le correctif précédent. Le cas le plus net est venu juste après, sur une première version de `feature/container-security` depuis jetée : `vote` déplacé du port 80 vers 8000 pour tourner en non-root, changement totalement masqué en local par le mapping `ports: "8080:8000"` de compose, et rien d'autre dans le repo n'avait été vérifié. C'est Vincent qui a repéré le manque, pas le workflow.
 
 **Objectif** : inscrire dans `CLAUDE.md` que l'analyse d'impact précède l'action, pour que ce mode de fonctionnement s'applique aux branches suivantes.
 
@@ -67,3 +67,28 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 **Décisions techniques** :
 
 - **La règle exige de vérifier le consommateur réel, parce que l'inverse avait failli être fait.** La passe `reviewer` signalait comme bloquante l'absence de `WEBSITES_PORT` dans le terraform, après le passage de `vote` sur le port 8000. Or `terraform/terraform.tfvars` pointe `registry_url = https://rgy.k8s.devops-svc-ag.com` et `web_app_vote_docker_image_name = polytech/vote:1.0.1` : c'est l'image préconstruite d'Avisto, la même que celle des manifests `k8s/`, pas celle construite ici. Ajouter `WEBSITES_PORT = "8000"` aurait cassé le déploiement au lieu de le réparer. Le couplage n'existera que le jour où ces variables pointeront une image issue de ce repo.
+
+---
+
+## #3 — feature/container-security
+
+**Contexte avant** : les 3 services tournaient en root (uid 0), aucune directive `USER`. Une première version de cette branche avait été jetée — elle avançait par correctifs successifs, chaque passe de revue révélant le problème créé par la précédente ; c'est de là que vient la règle « Analyse d'impact avant correctif » de l'entrée #2, dont cette branche est la première application.
+
+**Objectif** : faire tourner vote, worker et result en utilisateur non privilégié, en traitant toutes les conséquences dans un seul commit.
+
+**Ce qui a été fait** :
+
+- `USER node` (uid 1000) sur result, `USER app` (uid 1654) sur worker, `RUN useradd` + `USER appuser` sur vote.
+- `USER` placé après les `RUN` d'installation, `RUN useradd` au-dessus du `COPY . .` : les dépendances restent possédées par root et la création de l'utilisateur reste une couche stable.
+- `ENV PYTHONDONTWRITEBYTECODE=1` sur vote.
+- vote passe du port 80 à 8000, `compose.yaml` mappe `8080:8000`, `EXPOSE` déclaré sur les 3 images (8000 / 4000 / 8080).
+- `docker-conventions/SKILL.md` : section sécurité réécrite, avec un tableau des consommateurs d'un port de conteneur. `SUIVI.md` : non-root acté, dette conditionnelle terraform écrite.
+- Validé : `build` OK et démarrage à froid (`down -v` puis `up -d --wait`) sain, `id` renvoie uid 1000 / 1000 / 1654, `ExposedPorts` conformes, vote et result en 200, un vote posté atteint la base.
+- Deux vérifications ajoutées par la passe `reviewer` : `/healthz` du worker répond 200 en non-root — il est lancé en `Task.Run` fire-and-forget dans `Program.cs:26`, donc un échec de bind serait passé inaperçu — et `$HOME` est bien utilisé par gunicorn pour son socket de contrôle, le `--create-home` n'est pas décoratif.
+
+**Décisions techniques** :
+
+- **Réutiliser l'utilisateur non privilégié de l'image de base plutôt que d'en créer un.** `node` et le runtime .NET en fournissent déjà un ; seul `python:3.12-slim` n'en propose aucun, d'où le `useradd` sur vote uniquement.
+- **vote quitte le port 80 par déplacement, pas par privilège.** Se lier sous 1024 exige root. Les deux autres options — accorder `CAP_NET_BIND_SERVICE`, ou régler le sysctl `net.ipv4.ip_unprivileged_port_start` — réintroduisent soit un privilège, soit une config d'infra à répliquer sur chaque environnement.
+- **`terraform/` et `k8s/` volontairement non modifiés.** L'analyse d'impact confirme qu'ils déploient l'image préconstruite d'Avisto, qui écoute bien sur 80 (détail en entrée #2) ; aucun chemin ne mène l'image buildée ici vers App Service — pas de ressource ACR, pas d'identifiants de registre privé, aucun pipeline dans l'arbre. Dette conditionnelle écrite dans `SUIVI.md` : le jour où ces variables pointeront un build local, `WEBSITES_PORT` devient obligatoire.
+- **`PYTHONDONTWRITEBYTECODE=1`, conséquence directe du passage en non-root.** `/app` appartient à root, `appuser` ne peut plus y écrire les `.pyc`, et Python avale l'échec en silence — il recompile à chaque import sans jamais le signaler.
