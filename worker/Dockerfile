@@ -11,4 +11,8 @@ RUN dotnet publish -o /app --self-contained false --no-restore
 FROM mcr.microsoft.com/dotnet/runtime:8.0
 WORKDIR /app
 COPY --from=build /app .
+# The .NET runtime image already ships an unprivileged "app" user (uid 1654).
+USER app
+# The /healthz listener binds 8080, which needs no privilege.
+EXPOSE 8080
 ENTRYPOINT ["dotnet", "Worker.dll"]

@@ -101,6 +101,32 @@ environment:
 ```
 En syntaxe liste (`- CLÉ=valeur`), ne pas entourer seulement la valeur de guillemets — soit toute la ligne, soit rien si aucun caractère spécial YAML n'est présent.
 
-## Sécurité (à considérer, pas encore appliqué dans ce projet)
+## Sécurité : ne pas tourner en `root`
 
-Éviter de faire tourner le process en `root` à l'intérieur du container quand c'est évitable (`USER` directive). Non appliqué actuellement dans ce repo — amélioration possible à mentionner si le sujet sécurité vient en entretien.
+Sans directive `USER`, tout process tourne en uid 0 dans le container. Une faille applicative donne alors les pleins pouvoirs *dans* le container : modifier les paquets installés, installer des outils, atteindre les autres services du réseau interne. Ce n'est pas encore root sur l'hôte — Docker retire d'office une bonne partie des capacités — mais c'est la marche d'escalier qui y mène.
+
+Appliqué aux 3 services en Sprint 1. Ordre de préférence :
+
+1. **Réutiliser l'utilisateur fourni par l'image de base** quand il existe — `USER node` (images `node`, uid 1000), `USER app` (images `dotnet/runtime` et `aspnet` 8.0+, uid 1654). Rien à créer.
+2. Sinon le créer : `RUN useradd --create-home --uid 1000 appuser` puis `USER appuser` (cas de `python:*-slim`).
+
+Placement : `USER` **après** les `RUN` d'installation — `pip install` / `npm ci` ont besoin de root, et les dépendances doivent rester propriété de root pour que l'app ne puisse pas les réécrire. Le `RUN useradd` en revanche reste **au-dessus** du `COPY . .` : couche stable, inutile de la rejouer à chaque modif de code.
+
+`/app` appartenant à root, l'app non-root ne peut plus y écrire. Vérifier ce que chaque service écrit sur disque. Pour Python, ajouter `ENV PYTHONDONTWRITEBYTECODE=1` : sans ça l'échec d'écriture des `.pyc` est avalé en silence et le bytecode est recompilé à chaque import.
+
+Vérification qui ne ment pas : `docker compose exec <service> id` doit renvoyer un uid non nul.
+
+### Piège des ports privilégiés
+
+Sous Linux, se lier à un port < 1024 exige root. Une app qui écoutait sur 80 ne démarre plus une fois passée en non-root. Trois issues — déplacer le port côté image, accorder `CAP_NET_BIND_SERVICE`, ou régler le sysctl `net.ipv4.ip_unprivileged_port_start`. Préférer le déplacement : les deux autres réintroduisent un privilège ou une config d'infra à répliquer partout. Vécu sur `vote/` (80 → 8000) ; `result` (4000) et `worker` (8080) n'étaient pas concernés.
+
+⚠️ **Le mapping `ports: "8080:8000"` masque le changement en local, et seulement en local.** Avant de déplacer un port de conteneur, recenser tous ses consommateurs (voir « Analyse d'impact avant correctif » dans `CLAUDE.md`) :
+
+| Consommateur | Ce qu'il faut changer |
+|---|---|
+| Dockerfile | `EXPOSE <port>` — déclare le contrat |
+| Docker Compose | le mapping `ports:` |
+| Azure App Service | `WEBSITES_PORT` dans les `app_settings`, sinon la plateforme sonde 80 et renvoie 502 |
+| Manifests k8s | `containerPort` + le `port:` de chaque probe |
+
+**Mais vérifier d'abord quelle image chaque consommateur déploie réellement.** Dans ce repo, `terraform/` et `k8s/` pointent tous deux `rgy.k8s.devops-svc-ag.com/polytech/vote:1.0.1` — l'image préconstruite d'Avisto, pas celle buildée ici. Les « aligner » sur le nouveau port les casserait. Le couplage n'existera que le jour où ces références pointeront une image issue de ce repo.

@@ -28,7 +28,9 @@ services:
   vote:
     build: ./vote
     ports:
-      - "8080:80"
+      # 8000, not 80: vote runs as a non-root user and cannot bind a
+      # privileged port. The host-side port is unchanged.
+      - "8080:8000"
     environment:
       - REDIS_CONNECTION_STRING=redis://valkey:6379
   result:
