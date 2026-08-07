@@ -64,6 +64,23 @@ This project is managed by two Claude instances with distinct roles:
 
 `.claude/skills/` contient une fiche de conventions par stack (`dotnet-conventions`, `docker-conventions`, `azure-pipelines-conventions` pour l'instant — voir `.claude/skills/README.md`). Claude Code doit les suivre pour tout code qu'il écrit. Claude Cowork doit s'y référer pour signaler les écarts dans le code existant ou proposé, et expliquer pourquoi la convention est préférable.
 
+## Analyse d'impact avant correctif
+
+**L'analyse d'impact vient avant l'action, jamais après.** Avant de proposer ou d'appliquer un correctif, recenser tout ce qui référence la valeur ou le comportement qui va changer.
+
+Balayage minimum, à faire sur l'ensemble du repo :
+
+- toute autre occurrence de la valeur (port, nom de variable, chemin, version, nom de service)
+- les fichiers de configuration et d'infra : `compose.yaml`, `terraform/`, `k8s/`, pipelines CI
+- la documentation qui l'énonce : `README.md`, `SUIVI.md`, `.claude/skills/`
+- ce que le changement rend faux ailleurs, même sans erreur visible
+
+Vérifier aussi **qui consomme réellement** l'objet modifié avant d'en conclure quoi que ce soit. Exemple vécu : `terraform/` et `k8s/` référencent une image externe figée du registre d'Avisto, pas celle construite ici — les « aligner » sur un changement local les aurait cassés au lieu de les corriger.
+
+Ensuite seulement, agir : **tous les correctifs nécessaires dans un seul commit**. Un correctif qui fait apparaître un nouveau problème à la passe de revue suivante signale que l'analyse n'a pas été faite.
+
+Ce que l'analyse ne couvre pas doit être écrit — dans `SUIVI.md` en dette, ou dans la fiche de conventions concernée. Pas seulement dit en conversation.
+
 ## Git branching strategy
 
 - `main` → stable, production-ready, always tagged with `vMAJOR.MINOR.PATCH`
