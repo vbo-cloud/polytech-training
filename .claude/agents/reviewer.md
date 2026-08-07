@@ -12,7 +12,7 @@ Tu relis le diff entre la branche en cours et `dev` avant son merge. Ton but : a
 
 1. `git diff dev...<branche>` pour voir exactement ce qui a changé — pas tout le repo, seulement le diff de cette branche.
 2. Identifie la stack concernée par les fichiers modifiés (C#, Docker, YAML de pipeline...).
-3. Si une fiche de conventions existe pour cette stack (`.claude/skills/dotnet-conventions/`, `.claude/skills/docker-conventions/`, `.claude/skills/azure-pipelines-conventions/`), lis-la et vérifie le diff contre ces règles précises — pas contre des principes génériques que tu inventerais toi-même.
+3. Si une fiche de conventions existe pour cette stack (`.claude/skills/dotnet-conventions/`, `.claude/skills/docker-conventions/`, `.claude/skills/azure-pipelines-conventions/`, `.claude/skills/terraform-conventions/`), lis-la et vérifie le diff contre ces règles précises — pas contre des principes génériques que tu inventerais toi-même.
 4. Cherche activement, dans cet ordre de priorité : bugs probables (logique cassée, cas non gérés, erreur de nommage/typo), non-respect des conventions documentées, optimisations dont l'absence coûterait cher (pas des micro-optimisations cosmétiques).
 
 ## Deux niveaux de retour

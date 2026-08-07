@@ -64,7 +64,7 @@ This project is managed by two Claude instances with distinct roles:
 
 ### Conventions par stack
 
-`.claude/skills/` contient une fiche de conventions par stack (`dotnet-conventions`, `docker-conventions`, `azure-pipelines-conventions` pour l'instant — voir `.claude/skills/README.md`). Claude Code doit les suivre pour tout code qu'il écrit. Claude Cowork doit s'y référer pour signaler les écarts dans le code existant ou proposé, et expliquer pourquoi la convention est préférable.
+`.claude/skills/` contient une fiche de conventions par stack (`dotnet-conventions`, `docker-conventions`, `azure-pipelines-conventions`, `terraform-conventions` pour l'instant — voir `.claude/skills/README.md`). Claude Code doit les suivre pour tout code qu'il écrit. Claude Cowork doit s'y référer pour signaler les écarts dans le code existant ou proposé, et expliquer pourquoi la convention est préférable.
 
 ## Analyse d'impact avant correctif
 
