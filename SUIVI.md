@@ -54,6 +54,7 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 - [ ] Application Insights
 - [ ] Variables/outputs propres — un seul environnement, un seul `terraform.tfvars` (décision #13)
 - [x] `terraform/` aligné sur les conventions de nommage du projet : `{type}-[role-]poly-dev-frc` construit via `local.base_name`, tags `environment`/`project`/`owner` sur toutes les ressources Azure dont le type expose l'argument — les 2 subnets et la swift connection ne l'exposent pas côté provider —, région France Central. Rien n'était déployé, donc renommage sans recréation.
+- [x] Versions figées : provider `random` déclaré dans `required_providers` — il était résolu implicitement, donc non pinné —, cœur Terraform pinné via `required_version`, `.terraform.lock.hcl` versionné et régénéré pour `windows_amd64` et `linux_amd64`.
 
 ## Sprint 5 — Documentation & préparation entretien
 
