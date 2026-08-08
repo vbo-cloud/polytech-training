@@ -100,6 +100,12 @@ resource "azurerm_redis_cache" "redis" {
 
   minimum_tls_version = "1.2"
 
+  # Le provider laisse l'accès public à `true` par défaut : sans cette ligne, le
+  # cache reste joignable depuis Internet sur 6380 avec la seule clé d'accès, et
+  # le private endpoint ci-dessous ne sert à rien. Le seul consommateur est la
+  # Web App, qui l'atteint par l'intégration VNET.
+  public_network_access_enabled = false
+
   tags = local.tags
 }
 
@@ -117,6 +123,16 @@ resource "azurerm_private_endpoint" "redis_pe" {
     private_connection_resource_id = azurerm_redis_cache.redis.id
     subresource_names              = ["redisCache"]
     is_manual_connection           = false
+  }
+
+  # C'est Azure qui crée et maintient l'enregistrement A dans la zone, pas
+  # Terraform. Écrit à la main, cet enregistrement doit répéter le seul label
+  # d'hôte alors que le provider n'expose que le FQDN — c'était précisément le
+  # bug corrigé ici. Déléguer supprime la classe d'erreur, et l'enregistrement
+  # suit l'IP du private endpoint si elle change.
+  private_dns_zone_group {
+    name                 = "pdnszg-redis-${local.base_name}"
+    private_dns_zone_ids = [azurerm_private_dns_zone.redis_dns.id]
   }
 
   tags = local.tags
@@ -137,16 +153,6 @@ resource "azurerm_private_dns_zone_virtual_network_link" "redis_dns_link" {
   resource_group_name   = azurerm_resource_group.rg.name
   private_dns_zone_name = azurerm_private_dns_zone.redis_dns.name
   virtual_network_id    = azurerm_virtual_network.vnet.id
-
-  tags = local.tags
-}
-
-resource "azurerm_private_dns_a_record" "redis_record" {
-  name                = azurerm_redis_cache.redis.hostname
-  zone_name           = azurerm_private_dns_zone.redis_dns.name
-  resource_group_name = azurerm_resource_group.rg.name
-  ttl                 = 300
-  records             = [azurerm_private_endpoint.redis_pe.private_service_connection[0].private_ip_address]
 
   tags = local.tags
 }
@@ -174,6 +180,14 @@ resource "azurerm_linux_web_app" "vote" {
   service_plan_id     = azurerm_service_plan.voting_app.id
 
   site_config {
+    # L'intégration VNET régionale route déjà les destinations RFC1918 par
+    # défaut, mais pas les requêtes DNS de l'app. Sans ce réglage,
+    # `redis-....redis.cache.windows.net` se résoudrait hors du VNET, donc vers
+    # l'IP publique du cache — désormais fermée — au lieu de la zone
+    # privatelink. Le vote casserait au runtime avec un `plan` propre.
+    # `route_all` étend le routage à 0.0.0.0/0 et fait passer le DNS par le VNET.
+    vnet_route_all_enabled = true
+
     application_stack {
       docker_registry_url = var.registry_url
       docker_image_name   = var.web_app_vote_docker_image_name
