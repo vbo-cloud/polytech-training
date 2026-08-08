@@ -48,12 +48,24 @@ variable "resource_group_location" {
 # ==============================================================================
 variable "registry_url" {
   type        = string
-  default     = ""
-  description = "Registry URL."
+  description = "Container registry the web app pulls its image from, as an https:// URL. Currently Avisto's public registry, not an ACR of this project. No default: an empty value silently falls back to Docker Hub, where this image does not exist — the failure would surface at container pull, not at plan."
+
+  validation {
+    condition     = startswith(var.registry_url, "https://")
+    error_message = "L'URL du registre doit commencer par https:// — App Service refuse un registre en clair."
+  }
 }
 
 variable "web_app_vote_docker_image_name" {
   type        = string
-  default     = ""
-  description = "Docker image of vote."
+  description = "Repository and tag of the vote image, as `repository:tag`. No default: a web app deployed without an image is broken, and an empty default hides that until runtime."
+
+  validation {
+    # Le tag est ce qui suit le dernier `:` et ne peut pas contenir de `/` :
+    # ça écarte `repo` (pas de tag), `repo:` (tag vide) et `host:5000/repo`
+    # (le `:` est celui du port, pas d'un tag). `latest` est refusé à part,
+    # puisqu'il est syntaxiquement valide mais non reproductible.
+    condition     = can(regex("^.+:[A-Za-z0-9_][A-Za-z0-9._-]*$", var.web_app_vote_docker_image_name)) && !endswith(var.web_app_vote_docker_image_name, ":latest")
+    error_message = "L'image doit porter un tag explicite et non vide, autre que `latest` (ex. `polytech/vote:1.0.1`) — sinon la version réellement déployée n'est pas reproductible."
+  }
 }
