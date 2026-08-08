@@ -52,7 +52,7 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 
 - [ ] Étendre `terraform/main.tf` : App Service pour `worker` + `result`, base de données, Azure Cache for Redis
 - [ ] Application Insights
-- [ ] Variables/outputs propres, `.tfvars` par environnement
+- [ ] Variables/outputs propres — un seul environnement, un seul `terraform.tfvars` (décision #13)
 
 ## Sprint 5 — Documentation & préparation entretien
 

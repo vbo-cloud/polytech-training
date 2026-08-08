@@ -43,6 +43,8 @@ Dossiers additionnels présents dans le repo : `k8s/`, `terraform/`. Le `terrafo
 | 10 | CI/CD | Azure DevOps Pipelines (repo restant sur GitHub, pipeline piloté depuis Azure DevOps). |
 | 11 | Étapes pipeline | build → test → publish → deploy, un seul environnement + deployment slots App Service pour simuler dev/prod. |
 | 12 | Temps disponible | Entretien technique Avisto le mardi suivant à 15h (on est vendredi) → seulement le week-end disponible pour ce projet, puis retour sur `job-finder` dès lundi. Scope resserré à l'essentiel démontrable (voir `SUIVI.md`, Sprint 1.5). |
+| 13 | Environnements Terraform | **Un seul**, `dev`. Pas de `.tfvars` par environnement : dupliquer l'infra dupliquerait le coût Azure. La séparation dev/prod se fait via les deployment slots App Service, inclus dans le plan. |
+| 14 | Région Azure | **France Central** (`francecentral`, jeton `frc` dans les noms). Remplace le `westeurope` hérité du repo d'origine. |
 
 ## Comment me répondre
 
@@ -62,7 +64,7 @@ This project is managed by two Claude instances with distinct roles:
 
 ### Conventions par stack
 
-`.claude/skills/` contient une fiche de conventions par stack (`dotnet-conventions`, `docker-conventions`, `azure-pipelines-conventions` pour l'instant — voir `.claude/skills/README.md`). Claude Code doit les suivre pour tout code qu'il écrit. Claude Cowork doit s'y référer pour signaler les écarts dans le code existant ou proposé, et expliquer pourquoi la convention est préférable.
+`.claude/skills/` contient une fiche de conventions par stack (`dotnet-conventions`, `docker-conventions`, `azure-pipelines-conventions`, `terraform-conventions` pour l'instant — voir `.claude/skills/README.md`). Claude Code doit les suivre pour tout code qu'il écrit. Claude Cowork doit s'y référer pour signaler les écarts dans le code existant ou proposé, et expliquer pourquoi la convention est préférable.
 
 ## Analyse d'impact avant correctif
 
