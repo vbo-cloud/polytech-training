@@ -53,6 +53,7 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 - [ ] Étendre `terraform/main.tf` : App Service pour `worker` + `result`, base de données, Azure Cache for Redis
 - [ ] Application Insights
 - [ ] Variables/outputs propres — un seul environnement, un seul `terraform.tfvars` (décision #13)
+- [x] `terraform/` aligné sur les conventions de nommage du projet : `{type}-[role-]poly-dev-frc` construit via `local.base_name`, tags `environment`/`project`/`owner` sur toutes les ressources Azure dont le type expose l'argument — les 2 subnets et la swift connection ne l'exposent pas côté provider —, région France Central. Rien n'était déployé, donc renommage sans recréation.
 
 ## Sprint 5 — Documentation & préparation entretien
 
