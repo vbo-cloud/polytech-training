@@ -7,7 +7,7 @@ description: Conventions Terraform du projet polytech-training — nommage Azure
 
 Ces règles sont adaptées de celles du projet `job-finder` et resserrées sur ce périmètre : pas de landing zone, un seul environnement, dev/prod simulés via deployment slots App Service.
 
-Elles décrivent la cible, pas nécessairement l'état courant de `terraform/` — la fiche est écrite avant l'alignement du dossier, qui est traité dans une branche dédiée. Vérifier le code avant de supposer qu'une règle y est déjà appliquée.
+Elles décrivent la cible, pas nécessairement l'état courant de `terraform/`. Vérifier le code avant de supposer qu'une règle y est déjà appliquée — c'est vrai en permanence, pas seulement au moment où cette fiche a été écrite.
 
 ## Nommage
 
