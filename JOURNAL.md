@@ -281,3 +281,22 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 
 - **Migration forcée, pas un choix d'architecture.** `azurerm_redis_cache` restait le service documenté par la fiche de conventions et par `CLAUDE.md` jusqu'à ce commit ; le changement vient d'un blocage constaté au premier `apply` réel, pas d'une réévaluation anticipée. D'où le préfixe `fix:` sur le commit principal plutôt que `feat:`.
 - **`Balanced_B0` retenu sans comparatif détaillé des paliers.** Le seul objectif de cette branche est de retrouver un `apply` qui passe pendant le week-end contraint (décision #12 de `CLAUDE.md`) ; le dimensionnement fin du palier reste à revoir une fois l'infra stabilisée.
+
+---
+
+## #11 — feature/pipeline-install-terraform
+
+**Contexte avant** : `feature/azure-pipeline-ci` (entrée #8) venait d'être mergée dans `dev`, mais n'avait pas encore tourné en conditions réelles — la configuration manuelle côté portail Azure DevOps restait à faire. Le premier run réel a échoué au stage `Infra`, avec `terraform: command not found` : le commentaire du YAML affirmait à tort que Terraform était préinstallé sur l'image `ubuntu-latest`.
+
+**Objectif** : corriger le stage `Infra` pour qu'il installe Terraform lui-même, sans dépendre d'une hypothèse fausse sur l'agent.
+
+**Ce qui a été fait** :
+
+- Étape `Install Terraform` ajoutée en tête du job `Terraform`, avant les tâches qui invoquent le binaire : téléchargement du zip officiel HashiCorp (version 1.9.8) depuis `releases.hashicorp.com`, extraction dans `/usr/local/bin`, vérification par `terraform -version`.
+- Commentaire du YAML corrigé : il affirmait l'inverse de ce que le premier run a montré.
+
+**Décisions techniques** :
+
+- **Installation par téléchargement direct du binaire, pas par extension de la marketplace Azure DevOps.** L'organisation n'en a aucune installée, et en ajouter une est une action manuelle côté portail — hors de portée d'un fichier YAML.
+- **Version figée à 1.9.8, dans la plage `~> 1.9` que `providers.tf` exige déjà.** Le `required_version` continue de faire échouer le stage si un futur changement de version dérive hors plage, plutôt que de laisser passer un binaire inattendu.
+- **Installé dans `/usr/local/bin`, déjà dans le `PATH` par défaut de l'image.** Aucune manipulation de `PATH` nécessaire pour que les tâches `AzureCLI@2` suivantes, dans le même job, trouvent le binaire.
