@@ -1,17 +1,71 @@
-variable "resource_group_location" {
+# ==============================================================================
+# Naming and tagging
+# ==============================================================================
+variable "project" {
   type        = string
-  default     = "westeurope"
-  description = "Location of the resource group."
+  default     = "poly"
+  description = "Project token used in every resource name and in the `project` tag."
 }
 
+variable "environment" {
+  type        = string
+  default     = "dev"
+  description = "Environment token used in every resource name and in the `environment` tag. A single environment exists (CLAUDE.md decision #13) — dev/prod are simulated with App Service deployment slots."
+
+  validation {
+    condition     = contains(["dev"], var.environment)
+    error_message = "Un seul environnement est prévu sur ce projet : dev (décision #13). Ajouter une valeur ici implique d'arbitrer le coût d'une infra dupliquée."
+  }
+}
+
+variable "owner" {
+  type        = string
+  default     = "vincent"
+  description = "Value of the `owner` tag on every resource."
+}
+
+# ==============================================================================
+# Infrastructure
+# ==============================================================================
+variable "resource_group_location" {
+  type        = string
+  default     = "francecentral"
+  description = "Azure region hosting every resource of the project (CLAUDE.md decision #14). The naming token (frc, weu...) is derived from this value by `local.region_short_by_location` in main.tf — there is deliberately no second variable to keep in sync."
+
+  # La liste reste plus large que la décision #14 (`francecentral`), à la
+  # différence de `environment` verrouillé sur une seule valeur : ce qu'elle
+  # garantit n'est pas le respect de la décision mais l'existence d'un jeton de
+  # nommage. Changer de région reste possible sans toucher à la validation,
+  # déplacer l'infra dans un second environnement non.
+  validation {
+    condition     = contains(["francecentral", "westeurope", "northeurope"], var.resource_group_location)
+    error_message = "Région non reconnue. Ce champ pilote aussi le jeton de région des noms de ressources : ajouter une région ici impose d'ajouter son jeton court dans `local.region_short_by_location` (main.tf), sinon le plan échoue sur un index manquant."
+  }
+}
+
+# ==============================================================================
+# Container image
+# ==============================================================================
 variable "registry_url" {
   type        = string
-  default     = ""
-  description = "Registry URL."
+  description = "Container registry the web app pulls its image from, as an https:// URL. Currently Avisto's public registry, not an ACR of this project. No default: an empty value silently falls back to Docker Hub, where this image does not exist — the failure would surface at container pull, not at plan."
+
+  validation {
+    condition     = startswith(var.registry_url, "https://")
+    error_message = "L'URL du registre doit commencer par https:// — App Service refuse un registre en clair."
+  }
 }
 
 variable "web_app_vote_docker_image_name" {
   type        = string
-  default     = ""
-  description = "Docker image of vote."
+  description = "Repository and tag of the vote image, as `repository:tag`. No default: a web app deployed without an image is broken, and an empty default hides that until runtime."
+
+  validation {
+    # Le tag est ce qui suit le dernier `:` et ne peut pas contenir de `/` :
+    # ça écarte `repo` (pas de tag), `repo:` (tag vide) et `host:5000/repo`
+    # (le `:` est celui du port, pas d'un tag). `latest` est refusé à part,
+    # puisqu'il est syntaxiquement valide mais non reproductible.
+    condition     = can(regex("^.+:[A-Za-z0-9_][A-Za-z0-9._-]*$", var.web_app_vote_docker_image_name)) && !endswith(var.web_app_vote_docker_image_name, ":latest")
+    error_message = "L'image doit porter un tag explicite et non vide, autre que `latest` (ex. `polytech/vote:1.0.1`) — sinon la version réellement déployée n'est pas reproductible."
+  }
 }

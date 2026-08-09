@@ -4,3 +4,16 @@ voting-app.service
 
 # Machine-local Claude Code settings — agents/ and skills/ are tracked.
 .claude/settings.local.json
+
+# Terraform — le state contient en clair les valeurs sensibles remontées par
+# les providers (ex. primary_access_key du Redis, injectée dans app_settings).
+# Ne jamais le versionner.
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform/
+crash.log
+crash.*.log
+
+# .terraform.lock.hcl est volontairement versionné : il fige les versions de
+# providers réellement utilisées, en local comme en CI.
