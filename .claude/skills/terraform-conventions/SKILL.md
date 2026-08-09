@@ -1,11 +1,11 @@
 ---
 name: terraform-conventions
-description: Conventions Terraform du projet polytech-training — nommage Azure (rg-poly-dev-frc, asp-poly-dev-frc...), tags, règles de lifecycle/protection et pourquoi ce projet n'en pose aucune (Postgres compris), checklist sécurité et coût, commandes courantes. Utilise ce skill avant d'écrire ou modifier tout fichier .tf, de créer une resource group / ressource Azure, de nommer une ressource, ou de reviewer un diff touchant terraform/ — même si l'utilisateur ne dit pas explicitement "convention" ou "Terraform". Adapté depuis les conventions terraform du projet job-finder ; nomenclature ajustée au périmètre plus restreint de ce projet (pas de landing zone, un seul environnement + deployment slots App Service).
+description: Conventions Terraform du projet polytech-training — nommage Azure (rg-poly-dev-frc, asp-poly-dev-frc...), tags, règles de lifecycle/protection et pourquoi ce projet n'en pose aucune (Postgres compris), checklist sécurité et coût, commandes courantes. Utilise ce skill avant d'écrire ou modifier tout fichier .tf, de créer une resource group / ressource Azure, de nommer une ressource, ou de reviewer un diff touchant terraform/ — même si l'utilisateur ne dit pas explicitement "convention" ou "Terraform". Adapté depuis les conventions terraform du projet job-finder ; nomenclature ajustée au périmètre plus restreint de ce projet (pas de landing zone, un seul environnement, pas de deployment slots).
 ---
 
 # Conventions Terraform — projet polytech-training
 
-Ces règles sont adaptées de celles du projet `job-finder` et resserrées sur ce périmètre : pas de landing zone, un seul environnement, dev/prod simulés via deployment slots App Service.
+Ces règles sont adaptées de celles du projet `job-finder` et resserrées sur ce périmètre : pas de landing zone, un seul environnement, pas de deployment slots (décision #11 de `CLAUDE.md`).
 
 Elles décrivent la cible, pas nécessairement l'état courant de `terraform/`. Vérifier le code avant de supposer qu'une règle y est déjà appliquée — c'est vrai en permanence, pas seulement au moment où cette fiche a été écrite.
 
@@ -14,7 +14,7 @@ Elles décrivent la cible, pas nécessairement l'état courant de `terraform/`. 
 - Cloud provider : Azure only.
 - Pattern de nommage : `{type}-{role?}-{project}-{environment}-{region}-{index?}`
   - Projet : `poly`
-  - Environnement : `dev` (un seul environnement, cf. `CLAUDE.md` décision #13 — dev/prod simulés via deployment slots App Service, pas d'environnements Terraform séparés)
+  - Environnement : `dev` (un seul environnement, cf. `CLAUDE.md` décision #13 — pas de séparation dev/prod, ni par `.tfvars` ni par deployment slots)
   - Région : `frc` (France Central, cf. `CLAUDE.md` décision #14)
   - Rôle : optionnel, quand plusieurs ressources du même type se distinguent par leur **rôle** et non par un compteur. `snet-platform-poly-dev-frc` et `snet-asp-poly-dev-frc` restent lisibles là où `snet-poly-dev-frc-1` / `-2` ne dit plus rien.
   - Index : optionnel, seulement quand plusieurs instances du même type sont réellement interchangeables. Role et index ne s'utilisent pas ensemble.
@@ -97,7 +97,7 @@ Deux pièges à garder en tête avant de poser un `prevent_destroy` :
 - Pas d'IP publique sans justification explicite dans le message de commit/PR.
 - Aucun secret ou mot de passe en clair dans le code Terraform (utiliser des variables, jamais de valeur hardcodée).
 - Vérifier `.gitignore` avant tout premier `apply` sur une nouvelle machine : un state non ignoré est la fuite de secret la plus banale d'un projet Terraform.
-- **Toute ressource PaaS dotée d'un private endpoint doit avoir `public_network_access_enabled = false`.** Les providers laissent l'accès public ouvert par défaut : sans cette ligne, le private endpoint est décoratif et la ressource reste joignable depuis Internet avec sa seule clé. Vaut pour Redis, et pour Postgres/ACR le jour où ils arrivent.
+- **Toute ressource PaaS dotée d'un private endpoint doit avoir `public_network_access_enabled = false`.** Les providers laissent l'accès public ouvert par défaut : sans cette ligne, le private endpoint est décoratif et la ressource reste joignable depuis Internet avec sa seule clé. Vaut pour Redis. Postgres suit le même principe par un mécanisme différent — un serveur flexible ne se met pas derrière un private endpoint, l'accès privé passe par un sous-réseau délégué. L'ACR, lui, reste volontairement public : le SKU Basic ne supporte pas les private endpoints (Premium serait ~4x le coût), justifié en commit.
 - **Fermer l'accès public va toujours par paire avec `vnet_route_all_enabled = true`** sur les App Services qui consomment la ressource. L'intégration VNET régionale route déjà les destinations RFC1918 par défaut, mais **pas la résolution DNS** : sans ce réglage (défaut du provider : `false`), l'app résout le nom public de la ressource hors du VNET, tombe sur son IP publique qu'on vient de fermer, et casse — alors que `terraform plan` ne voit rien. `route_all` étend le routage à `0.0.0.0/0` et fait passer le DNS par le VNET, donc par les zones privatelink qui y sont liées.
   - Ne pas confondre avec `vnet_image_pull_enabled` : laissé à `false`, le pull de l'image continue de passer par le réseau d'infrastructure App Service. C'est ce qui permet de garder un registre public joignable tout en routant le reste par le VNET.
 - Azure Cache for Redis : `minimum_tls_version = "1.2"`.

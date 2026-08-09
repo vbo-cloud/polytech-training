@@ -41,9 +41,9 @@ Dossiers additionnels présents dans le repo : `k8s/`, `terraform/`. Le `terrafo
 | 8 | Monitoring | Application Insights. |
 | 9 | Reverse proxy | Pas de Nginx (inutile sur App Service). |
 | 10 | CI/CD | Azure DevOps Pipelines (repo restant sur GitHub, pipeline piloté depuis Azure DevOps). |
-| 11 | Étapes pipeline | build → test → publish → deploy, un seul environnement + deployment slots App Service pour simuler dev/prod. |
+| 11 | Étapes pipeline | build → test → publish → deploy, un seul environnement. **Pas de deployment slots** : ils exigent un plan App Service Standard, soit ~5x le coût de B1, pour une démo qui n'a pas vocation à être une prod. Le déploiement va directement sur l'application. Révisé : la version initiale prévoyait des slots dev/prod. |
 | 12 | Temps disponible | Entretien technique Avisto le mardi suivant à 15h (on est vendredi) → seulement le week-end disponible pour ce projet, puis retour sur `job-finder` dès lundi. Scope resserré à l'essentiel démontrable (voir `SUIVI.md`, Sprint 1.5). |
-| 13 | Environnements Terraform | **Un seul**, `dev`. Pas de `.tfvars` par environnement : dupliquer l'infra dupliquerait le coût Azure. La séparation dev/prod se fait via les deployment slots App Service, inclus dans le plan. |
+| 13 | Environnements Terraform | **Un seul**, `dev`. Pas de `.tfvars` par environnement : dupliquer l'infra dupliquerait le coût Azure. Pas non plus de séparation par slots (voir #11) — il n'y a qu'un seul emplacement de déploiement. |
 | 14 | Région Azure | **France Central** (`francecentral`, jeton `frc` dans les noms). Remplace le `westeurope` hérité du repo d'origine. |
 
 ## Comment me répondre
