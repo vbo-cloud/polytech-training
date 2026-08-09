@@ -17,3 +17,8 @@ crash.*.log
 
 # .terraform.lock.hcl est volontairement versionné : il fige les versions de
 # providers réellement utilisées, en local comme en CI.
+
+# .NET — sorties de compilation et fichiers intermédiaires NuGet/MSBuild.
+# Générés par `dotnet build`/`dotnet test`.
+bin/
+obj/

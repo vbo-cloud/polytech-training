@@ -31,8 +31,6 @@ namespace Worker
                 var keepAliveCommand = pgsql.CreateCommand();
                 keepAliveCommand.CommandText = "SELECT 1";
 
-                var definition = new { vote = "", voter_id = "" };
-
                 while (!cts.Token.IsCancellationRequested)
                 {
                     // Slow down to prevent CPU spike, only query each 200ms
@@ -49,8 +47,8 @@ namespace Worker
                     string json = await redis.ListLeftPopAsync("votes");
                     if (json != null)
                     {
-                        var vote = JsonConvert.DeserializeAnonymousType(json, definition);
-                        Console.WriteLine($"Processing vote for '{vote.vote}' by '{vote.voter_id}'");
+                        var vote = ParseVote(json);
+                        Console.WriteLine($"Processing vote for '{vote.Option}' by '{vote.VoterId}'");
                         // Reconnect DB if down
                         if (!pgsql.State.Equals(System.Data.ConnectionState.Open))
                         {
@@ -59,7 +57,7 @@ namespace Worker
                         }
                         else
                         { // Normal +1 vote requested
-                            UpdateVote(pgsql, vote.voter_id, vote.vote);
+                            UpdateVote(pgsql, vote.VoterId, vote.Option);
                         }
                     }
                     else
@@ -176,6 +174,28 @@ namespace Worker
             }
             Console.WriteLine($"Connected to redis");
             return connection;
+        }
+
+        // Charge utile déposée dans la file Redis par le front `vote`. Les noms
+        // de champs JSON viennent de `vote/app.py` et restent en snake_case ;
+        // les propriétés C# suivent la convention du projet, d'où les
+        // attributs de mapping plutôt qu'un renommage de part et d'autre.
+        public sealed class VotePayload
+        {
+            [JsonProperty("vote")]
+            public string Option { get; set; }
+
+            [JsonProperty("voter_id")]
+            public string VoterId { get; set; }
+        }
+
+        // Sorti du corps de la boucle pour être testable sans Redis ni Postgres :
+        // c'est le seul endroit où le worker interprète une donnée qu'il n'a pas
+        // produite. Le comportement est inchangé — une charge utile illisible
+        // lève, la boucle appelante l'attrape et arrête le worker.
+        public static VotePayload ParseVote(string json)
+        {
+            return JsonConvert.DeserializeObject<VotePayload>(json);
         }
 
         private static void UpdateVote(NpgsqlConnection connection, string voterId, string vote)
