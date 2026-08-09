@@ -60,6 +60,34 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
   - Deux registres coexistent : le worker tire de l'ACR du projet, le vote reste sur celui d'Avisto. La demande initiale était de faire pointer `registry_url` sur l'ACR ; impossible sans y pousser aussi l'image du vote, que le pipeline ne construit pas. La variable est renommée `vote_registry_url` pour que l'intention soit lisible.
   - Le tag d'image du worker appartient au pipeline : `ignore_changes` sur `docker_image_name`, sans quoi le `terraform apply` suivant annulerait le dernier déploiement. Terraform ne pose que la valeur d'amorçage, et **le worker ne démarre pas tant que le pipeline n'a pas tourné une première fois**.
   - `azurerm_app_service_virtual_network_swift_connection` remplacée par l'argument `virtual_network_subnet_id` sur chaque app : le provider interdit de mélanger les deux, et l'argument porté par la ressource évite une ressource séparée par application.
+- [x] **State Terraform distant.** Imposé par le passage de l'`apply` dans le pipeline : un agent Azure DevOps est éphémère, un state local disparaît avec lui et le run suivant repartirait de zéro, donc recréerait tout.
+  - Conteneur `tfstate` d'un compte `sttfstatepolydevfrc`, dans **`rg-tfstate-poly-dev-frc`** — un resource group distinct de celui que Terraform gère. Y loger le state le ferait s'effacer lui-même pendant un `terraform destroy` de teardown.
+  - Amorçage fait à la main (`az group create`, `az storage account create`, `az storage container create`) : Terraform ne peut pas créer le stockage où il écrit son propre state. Versioning de blobs activé, pour pouvoir revenir sur un state écrasé.
+  - Accès par Entra ID (`use_azuread_auth = true`), pas par clé de compte : rien à stocker ni à faire tourner.
+  - Coût négligeable (quelques centimes par mois). Ce RG **ne doit pas** être détruit au teardown, à l'inverse de `rg-poly-dev-frc`.
+
+- **Droits du service principal — à faire avant le premier `apply`.** `azurerm_role_assignment.worker_acr_pull` écrit une attribution de rôle, ce que `Contributor` ne permet pas. Pour que `sp-poly-pipeline-dev` puisse lancer l'`apply` lui-même, lui accorder `User Access Administrator` sur le seul resource group du projet :
+
+  ```bash
+  az role assignment create     --assignee <sp-object-id>     --role "User Access Administrator"     --scope "/subscriptions/<subscription-id>/resourceGroups/rg-poly-dev-frc"
+  ```
+
+  Portée volontairement limitée au RG, et `User Access Administrator` plutôt qu'`Owner` : le SP gagne le droit d'attribuer des rôles, pas celui de tout faire. Il ne peut pas s'accorder ce droit lui-même — c'est justement celui qui lui manque — donc l'opération se fait une fois, hors Terraform, par un compte propriétaire.
+
+  Second rôle nécessaire, pour que le pipeline lise et écrive le state distant :
+
+  ```bash
+  az role assignment create     --assignee <sp-object-id>     --role "Storage Blob Data Contributor"     --scope "/subscriptions/<subscription-id>/resourceGroups/rg-tfstate-poly-dev-frc/providers/Microsoft.Storage/storageAccounts/sttfstatepolydevfrc"
+  ```
+
+  Rôle de plan de données, sans lequel le `terraform init` du pipeline échoue sur un 403 au conteneur — un `Contributor` sur le compte ne suffirait pas.
+- [x] **Resource group importé.** `rg-poly-dev-frc` existait déjà sur Azure, vide, créé à la main pour scoper le SP : Terraform aurait voulu le créer et l'`apply` aurait échoué. Il est désormais dans le state, et le `plan` confirme qu'il correspond à la configuration — mêmes tags, même région, donc 0 modification.
+
+  ```powershell
+  terraform import azurerm_resource_group.rg "/subscriptions/<subscription-id>/resourceGroups/rg-poly-dev-frc"
+  ```
+
+  À lancer depuis PowerShell, pas Git Bash : ce dernier prend l'identifiant de ressource pour un chemin POSIX et le réécrit en `C:/Program Files/subscriptions/...`. L'erreur renvoyée parle d'un segment manquant, pas de conversion de chemin. L'import n'écrit que dans le state local et `terraform state rm` l'annule.
 - [x] Base de données : `azurerm_postgresql_flexible_server` B1ms, en accès privé (sous-réseau délégué + zone DNS privée dédiée, pas de private endpoint — un serveur flexible ne fonctionne pas ainsi). Base applicative `votes`, mot de passe généré par `random_password` pour qu'aucun identifiant ne transite par `terraform.tfvars`.
   - Pas de `prevent_destroy`, à l'inverse de ce que la fiche de conventions prévoyait pour ce type : les votes sont des données de démonstration régénérables, et la protection contaminerait le resource group entier en bloquant le `terraform destroy` de teardown. La fiche est corrigée en conséquence.
   - Piège du provider : `azurerm_postgresql_flexible_server_database` porte un `prevent_destroy` **implicite**. Sans `lifecycle { prevent_destroy = false }`, le teardown échoue au plan sans dire d'où vient la protection.
