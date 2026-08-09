@@ -39,7 +39,9 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 - [ ] Remplacer le SQL brut (Npgsql) par EF Core (DbContext, migrations)
 - [ ] Ajouter des retries avec Polly (au lieu des boucles `Thread.Sleep` manuelles)
 - [ ] Logs structurés
-- [ ] Tests unitaires de base
+- [x] Tests unitaires de base — xUnit sur `Program.ParseVote` (`worker.Tests/`)
+  - Dette identifiée par ces tests, volontairement hors scope : un `voter_id` manquant dans la charge utile n'est pas rejeté, il passe en base tel quel (`ParseVote_WithMissingVoterId_LeavesItNull`). Validation à ajouter avec le passage à EF Core.
+- [ ] Distinguer liveness et readiness sur `/healthz` (`worker/Program.cs`) : le worker se déclare vivant dès le démarrage, pas prêt — il répond 200 alors qu'il attend peut-être encore sa base. Demande un état partagé entre la boucle de traitement et le listener.
 
 ## Sprint 3 — CI/CD Azure DevOps
 

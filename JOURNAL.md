@@ -150,3 +150,28 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 - **Fermer l'accès public au Redis imposait deux corrections couplées, invisibles au `plan`.** La ligne `public_network_access_enabled = false` seule aurait cassé le vote au runtime avec un plan parfaitement propre. Le point non évident : l'intégration VNET régionale route les destinations RFC1918, mais **pas la résolution DNS de l'app**. Sans `vnet_route_all_enabled = true`, la Web App résout le nom du cache hors du VNET, donc hors de la zone privatelink, et tombe sur l'IP publique qu'on venait de fermer.
 - **L'enregistrement DNS A a été supprimé plutôt que corrigé.** Il recevait `redis.hostname`, donc le FQDN complet, alors que `zone_name` fournit déjà le domaine — il produisait `xxx.redis.cache.windows.net.privatelink.redis.cache.windows.net`. Le correctif évident était de lui passer le seul label d'hôte, mais le provider n'expose que le FQDN : écrire ce record à la main revient toujours à en redécouper le label, et la faute reviendra. Déléguer à `private_dns_zone_group` fait partir la classe d'erreur avec la ressource, et l'enregistrement suit l'IP du private endpoint si elle change. Cette suppression sèche n'est gratuite que parce que rien n'est déployé : avec un state existant, elle aurait orphelinné l'enregistrement côté Azure et imposé un `terraform state rm`.
 - **Le pin `required_version` est commité avant les validations qui en dépendent.** L'ordre des commits n'est pas cosmétique ici : `startswith()`/`endswith()` sont apparus en 1.3, un garde-fou posé après leur introduction laisserait une fenêtre où un agent CI sur une version plus ancienne échoue de façon cryptique. Le plancher est posé à 1.9 et non 1.3, pour laisser la place à la validation croisée entre variables, attendue dès l'arrivée des App Services worker et result.
+
+---
+
+## #6 — feature/worker-testability
+
+**Contexte avant** : `worker/` ne portait aucun test — sa seule logique isolable, l'interprétation du JSON déposé dans la file par le front `vote`, était enfermée dans un type anonyme déclaré dans `Main`, donc inaccessible depuis un test. Son endpoint `/healthz` était démarré après `OpenDbConnection` et `OpenRedisConnection`, deux boucles qui bloquent indéfiniment tant que leur cible ne répond pas. Cette branche est l'une des trois issues du découpage de `feature/azure-pipeline`, qui combinait à l'origine tests worker, infra Terraform et pipeline CI ; les deux autres parties vivent sur des branches séparées, mergées après celle-ci.
+
+**Objectif** : rendre le worker testable et sûr à déployer — extraire le parsing du vote derrière un point d'entrée public, le couvrir de tests, et corriger l'ordre de démarrage qui masque le port de santé.
+
+**Ce qui a été fait** :
+
+- `JsonConvert.DeserializeAnonymousType` sur un type anonyme dans `Main` devient `ParseVote(string)` + classe `VotePayload`, tous deux publics.
+- Projet `worker.Tests/` (xUnit), placé à côté de `worker/` et non dedans. Quatre cas sur `ParseVote` : charge utile nominale, champ inconnu ignoré, champ manquant, JSON illisible — les deux derniers documentent le comportement réel du worker (vote perdu silencieusement), pas le comportement souhaitable.
+- `StartHealthCheckServer` déplacé avant l'ouverture des connexions DB et Redis : le port de santé est désormais lié dès le démarrage, plus après que les dépendances aient répondu.
+- `bin/` et `obj/` ajoutés au `.gitignore` racine — le projet de test les fait apparaître à la racine du worker.
+- `SUIVI.md` : case « Tests unitaires de base » du Sprint 2 cochée, deux dettes tracées — validation du `voter_id` manquant, distinction liveness/readiness sur `/healthz`.
+- Validé en local : 4 tests, 4 succès.
+
+**Décisions techniques** :
+
+- **Le projet de test vit à côté de `worker/`, pas dedans.** `worker/Dockerfile` fait `COPY . .` depuis ce dossier ; un projet de test placé dedans se serait retrouvé embarqué dans l'image de production avec ses dépendances.
+- **`RollForward=LatestMajor` sur `Worker.Tests.csproj`.** Sans lui, `dotnet test` échoue au lancement du testhost sur toute machine où seul un SDK/runtime .NET plus récent que 8.0 est installé, avec un message qui ne pointe pas vers le code (« You must install or update .NET »). Le `build` seul ne révèle pas le problème, lui passe déjà sans cette ligne.
+- **Les tests assertent le comportement réel, pas le comportement souhaitable.** Un `voter_id` absent passe en base tel quel, un JSON illisible arrête le worker après que le message a déjà été retiré de la file — le vote est perdu silencieusement. Écrire ces cas à l'envers, en asserant ce qu'on voudrait, aurait fait échouer la suite sur du code que cette branche ne corrige pas. Dette tracée dans `SUIVI.md` (Sprint 2), pas seulement en commentaire.
+- **Les noms de champs JSON restent en snake_case côté contrat, PascalCase côté C#, réconciliés par des attributs `JsonProperty`.** Le contrat de la file appartient au front `vote/app.py`, la convention de nommage au projet worker — aligner l'un sur l'autre plutôt que de les faire cohabiter aurait fait dépendre un service de la convention de l'autre.
+- **Le worker se déclare vivant dès le démarrage, pas prêt.** Corriger l'ordre de bind ne distingue pas liveness et readiness : il répond 200 alors qu'il attend peut-être encore sa base. Les distinguer demande un état partagé entre la boucle de traitement et le listener HTTP — tracé en dette (Sprint 2) plutôt que traité ici, pour rester sur le seul correctif qui rendait le port injoignable.
