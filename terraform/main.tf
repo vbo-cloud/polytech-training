@@ -158,6 +158,37 @@ resource "azurerm_private_dns_zone_virtual_network_link" "redis_dns_link" {
 }
 
 # ==============================================================================
+# Container registry
+# ==============================================================================
+# Le pipeline Azure DevOps y pousse l'image du worker ; les App Services l'en
+# tirent. Nom sans tiret et globalement unique, contraintes propres au type
+# (cf. SKILL.md, section nommage) : le pattern projet est concaténé sans
+# séparateurs plutôt que tronqué.
+resource "azurerm_container_registry" "acr" {
+  name                = "acr${replace(local.base_name, "-", "")}${random_string.suffix.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  sku                 = "Basic"
+
+  # L'utilisateur admin distribue un couple identifiant/mot de passe partagé,
+  # qu'il faudrait ensuite stocker quelque part — dans les app_settings, donc
+  # dans le state. Les App Services tirent leurs images par identité managée
+  # (voir plus bas), l'agent de pipeline par sa connexion de service.
+  admin_enabled = false
+
+  # Seule ressource du projet volontairement joignable depuis Internet en plus
+  # du front de vote. Deux raisons cumulées : le SKU Basic ne supporte pas les
+  # private endpoints — il faudrait passer en Premium, environ quatre fois le
+  # prix du reste de l'infra réunie — et l'agent Microsoft-hosted du pipeline
+  # est hors du VNET, donc incapable de pousser sur un registre fermé.
+  # `admin_enabled = false` fait qu'un accès réseau ne suffit pas : il faut un
+  # jeton Entra ID et un rôle sur le registre.
+  public_network_access_enabled = true
+
+  tags = local.tags
+}
+
+# ==============================================================================
 # App Service plan
 # ==============================================================================
 resource "azurerm_service_plan" "voting_app" {
