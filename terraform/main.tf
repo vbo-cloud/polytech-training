@@ -308,7 +308,7 @@ resource "azurerm_service_plan" "voting_app" {
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
   os_type             = "Linux"
-  sku_name            = "B1"
+  sku_name            = var.service_plan_sku
 
   tags = local.tags
 }
@@ -322,6 +322,12 @@ resource "azurerm_linux_web_app" "vote" {
   resource_group_name = azurerm_resource_group.rg.name
   service_plan_id     = azurerm_service_plan.voting_app.id
 
+  # Remplace la ressource `azurerm_app_service_virtual_network_swift_connection`
+  # utilisée jusqu'ici. Les deux font la même chose et le provider interdit de
+  # les mélanger sur une même app ; l'argument porté par la ressource évite une
+  # ressource séparée par application.
+  virtual_network_subnet_id = azurerm_subnet.asp.id
+
   site_config {
     # L'intégration VNET régionale route déjà les destinations RFC1918 par
     # défaut, mais pas les requêtes DNS de l'app. Sans ce réglage,
@@ -332,12 +338,15 @@ resource "azurerm_linux_web_app" "vote" {
     vnet_route_all_enabled = true
 
     application_stack {
-      docker_registry_url = var.registry_url
+      docker_registry_url = var.vote_registry_url
       docker_image_name   = var.web_app_vote_docker_image_name
     }
   }
 
   app_settings = {
+    # Format URL, attendu par la bibliothèque `redis` de Python. Le worker, en
+    # .NET, en attend un autre — voir plus bas.
+    #
     # `urlencode` n'est pas cosmétique : une clé d'accès Azure fait 44
     # caractères base64, donc contient un `/` environ une fois sur deux. Non
     # encodée, elle termine le `netloc` de l'URL au premier `/`, et
@@ -351,9 +360,103 @@ resource "azurerm_linux_web_app" "vote" {
 }
 
 # ==============================================================================
-# Web app VNET integration
+# Web app — worker
 # ==============================================================================
-resource "azurerm_app_service_virtual_network_swift_connection" "vnet_integration" {
-  app_service_id = azurerm_linux_web_app.vote.id
-  subnet_id      = azurerm_subnet.asp.id
+# Réglages du worker, isolés dans un local pour rester lisibles à côté du reste
+# de la ressource — l'app en est aujourd'hui le seul consommateur.
+locals {
+  worker_app_settings = {
+    # Le worker n'écoute pas 80. Sans ce réglage App Service sonde 80, ne
+    # reçoit rien et renvoie 502 sur une application par ailleurs saine.
+    "WEBSITES_PORT" = "8080"
+
+    # Format de chaîne de StackExchange.Redis, différent de l'URL `rediss://`
+    # donnée au front de vote : la bibliothèque .NET ne sait pas lire ce schéma.
+    # Pas d'encodage nécessaire ici, à l'inverse de l'URL du vote : ce format
+    # n'est pas une URL, la clé y est une valeur de champ.
+    # `abortConnect=False` laisse le multiplexeur retenter au lieu d'échouer
+    # définitivement si le cache n'est pas encore prêt au démarrage.
+    "REDIS_CONNECTION_STRING" = "${azurerm_redis_cache.redis.hostname}:6380,password=${azurerm_redis_cache.redis.primary_access_key},ssl=True,abortConnect=False"
+
+    "POSTGRESQL_CONNECTION_STRING" = join(";", [
+      "Host=${azurerm_postgresql_flexible_server.psql.fqdn}",
+      "Port=5432",
+      "Database=${azurerm_postgresql_flexible_server_database.votes.name}",
+      "Username=${var.postgresql_administrator_login}",
+      "Password=${random_password.psql_admin.result}",
+      "SSL Mode=Require",
+      "Trust Server Certificate=true",
+    ])
+
+    "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
+  }
+}
+
+# Le worker n'est pas une application web : c'est un consommateur de file qui
+# tourne en continu. App Service exige malgré tout qu'un conteneur Linux réponde
+# sur un port, sinon il le recycle en boucle — d'où le serveur `/healthz` du
+# worker, exposé sur 8080.
+resource "azurerm_linux_web_app" "worker" {
+  name                = "app-worker-${local.base_name}-${random_string.suffix.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  service_plan_id     = azurerm_service_plan.voting_app.id
+
+  virtual_network_subnet_id = azurerm_subnet.asp.id
+
+  # Sert à deux choses : tirer l'image de l'ACR sans identifiants, et porter le
+  # rôle `AcrPull` attribué plus bas.
+  identity {
+    type = "SystemAssigned"
+  }
+
+  site_config {
+    # Même raison que pour le vote : sans ça, l'app résout les noms du cache et
+    # de la base hors du VNET, donc hors des zones DNS privées.
+    vnet_route_all_enabled = true
+
+    # Le pull passe par l'identité managée. Sans cette ligne, App Service
+    # cherche des identifiants de registre dans les app_settings et échoue —
+    # l'ACR a `admin_enabled = false`, il n'y en a aucun.
+    container_registry_use_managed_identity = true
+
+    # Slash final volontaire : le worker enregistre le préfixe
+    # `http://*:8080/healthz/`. HttpListener sous Windows accepte la requête
+    # sans slash, l'implémentation managée utilisée sous Linux — celle du
+    # conteneur — ne le garantit pas. Le chemin exact vaut mieux qu'un pari :
+    # une sonde qui échoue ici recycle le conteneur en boucle.
+    health_check_path = "/healthz/"
+
+    application_stack {
+      docker_registry_url = "https://${azurerm_container_registry.acr.login_server}"
+      docker_image_name   = var.web_app_worker_docker_image_name
+    }
+  }
+
+  app_settings = local.worker_app_settings
+
+  # Le tag d'image appartient au pipeline, pas à Terraform : chaque run pousse
+  # `$(Build.BuildId)` et déploie ce tag. Sans cette ligne, le `terraform apply`
+  # suivant ramènerait l'app à la valeur figée dans `terraform.tfvars` et
+  # annulerait silencieusement le dernier déploiement. Terraform ne pose donc
+  # que la valeur d'amorçage, à la création.
+  lifecycle {
+    ignore_changes = [site_config[0].application_stack[0].docker_image_name]
+  }
+
+  tags = local.tags
+}
+
+# ==============================================================================
+# ACR pull permissions
+# ==============================================================================
+# Écrire une attribution de rôle demande un droit que `Contributor` n'a pas.
+# La connexion de service du pipeline porte donc `User Access Administrator` en
+# plus, sur le seul resource group du projet — sans quoi elle ne pourrait pas
+# lancer le `terraform apply` jusqu'au bout. Attribué hors Terraform : le SP ne
+# peut pas s'accorder à lui-même le droit dont il a besoin pour le faire.
+resource "azurerm_role_assignment" "worker_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_linux_web_app.worker.identity[0].principal_id
 }

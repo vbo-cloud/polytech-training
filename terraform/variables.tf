@@ -10,7 +10,7 @@ variable "project" {
 variable "environment" {
   type        = string
   default     = "dev"
-  description = "Environment token used in every resource name and in the `environment` tag. A single environment exists (CLAUDE.md decision #13) — dev/prod are simulated with App Service deployment slots."
+  description = "Environment token used in every resource name and in the `environment` tag. A single environment exists (CLAUDE.md decision #13), and a single deployment target — no slots (decision #11)."
 
   validation {
     condition     = contains(["dev"], var.environment)
@@ -43,6 +43,20 @@ variable "resource_group_location" {
   }
 }
 
+variable "service_plan_sku" {
+  type        = string
+  default     = "B1"
+  description = "SKU of the shared App Service plan hosting the vote front end and the worker. B1 by default (CLAUDE.md decision #11): the project demonstrates a pipeline, not a production topology. Deployment slots need Standard or above — moving up is a one-line change here, but it also brings back `azurerm_linux_web_app_slot` and the swap stage, both removed."
+
+  validation {
+    # Le plancher est le tier dédié : Free et Shared partagent leur machine,
+    # n'offrent ni intégration VNET ni conteneurs Linux, et l'app ne
+    # démarrerait pas. L'erreur n'apparaîtrait qu'à l'apply.
+    condition     = can(regex("^(B[1-3]|S[1-3]|P[1-3]v2|P[0-3]v3)$", var.service_plan_sku))
+    error_message = "SKU non supporté. Il faut un tier dédié : Basic (B1-B3), Standard (S1-S3) ou Premium (P1v2-P3v2, P0v3-P3v3). Free et Shared n'offrent ni intégration VNET ni conteneurs Linux."
+  }
+}
+
 # ==============================================================================
 # PostgreSQL
 # ==============================================================================
@@ -62,13 +76,28 @@ variable "postgresql_administrator_login" {
 # ==============================================================================
 # Container image
 # ==============================================================================
-variable "registry_url" {
+# Deux registres coexistent volontairement, d'où le préfixe `vote_` : le worker
+# tire son image de l'ACR du projet, dont l'URL est calculée à l'apply et ne
+# peut donc pas vivre ici. Le vote, lui, reste sur le registre public d'Avisto —
+# le pipeline ne construit que l'image du worker, et basculer le vote sur l'ACR
+# le casserait tant que son image n'y est pas poussée.
+variable "vote_registry_url" {
   type        = string
-  description = "Container registry the web app pulls its image from, as an https:// URL. Currently Avisto's public registry, not an ACR of this project. No default: an empty value silently falls back to Docker Hub, where this image does not exist — the failure would surface at container pull, not at plan."
+  description = "Container registry the vote web app pulls its image from, as an https:// URL. Avisto's public registry, not the project ACR — the worker uses `azurerm_container_registry.acr.login_server`, a computed value that cannot be set here. No default: an empty value silently falls back to Docker Hub, where this image does not exist, and the failure would surface at container pull rather than at plan."
 
   validation {
-    condition     = startswith(var.registry_url, "https://")
+    condition     = startswith(var.vote_registry_url, "https://")
     error_message = "L'URL du registre doit commencer par https:// — App Service refuse un registre en clair."
+  }
+}
+
+variable "web_app_worker_docker_image_name" {
+  type        = string
+  description = "Repository and tag of the worker image in the project ACR, as `repository:tag`. Bootstrap value only: Terraform sets it at creation, then `ignore_changes` hands the tag over to the pipeline, which deploys `$(Build.BuildId)` on every run. Until the first pipeline run this image does not exist yet and the worker will not start."
+
+  validation {
+    condition     = can(regex("^.+:[A-Za-z0-9_][A-Za-z0-9._-]*$", var.web_app_worker_docker_image_name)) && !endswith(var.web_app_worker_docker_image_name, ":latest")
+    error_message = "L'image doit porter un tag explicite et non vide, autre que `latest` (ex. `polytech/worker:0.1.0`) — sinon la version réellement déployée n'est pas reproductible."
   }
 }
 

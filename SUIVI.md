@@ -52,7 +52,14 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 
 ## Sprint 4 — Infra Azure (Terraform)
 
-- [ ] Étendre `terraform/main.tf` : App Service pour `worker` + `result`
+- [ ] Étendre `terraform/main.tf` : App Service pour `result`
+- [x] Registre de conteneurs : `azurerm_container_registry` SKU Basic, `admin_enabled = false`. Seule ressource publique du projet avec le front de vote — Basic ne supporte pas les private endpoints, et l'agent Microsoft-hosted du pipeline est hors du VNET.
+- [x] App Service pour le `worker`, avec une identité managée titulaire du rôle `AcrPull` sur le registre.
+  - **Le plan reste en B1, donc sans deployment slot.** Les tiers Free, Shared et Basic n'en supportent aucun : les slots imposaient de passer en Standard, ~5x le coût, pour une démo qui n'a pas vocation à être une prod. Décision #11 révisée en conséquence, et le stage `Promote` qui échangeait les slots a disparu. Le déploiement va directement sur l'application.
+    - Contrepartie : le déploiement redémarre le conteneur, donc quelques secondes sans dépilement de la file. Les votes s'y accumulent et sont traités au redémarrage — rien n'est perdu, et le front de vote reste disponible. Remonter en Standard rétablirait le déploiement sans coupure ; c'est une ligne dans `service_plan_sku`, plus la ressource de slot et le stage de swap à réintroduire.
+  - Deux registres coexistent : le worker tire de l'ACR du projet, le vote reste sur celui d'Avisto. La demande initiale était de faire pointer `registry_url` sur l'ACR ; impossible sans y pousser aussi l'image du vote, que le pipeline ne construit pas. La variable est renommée `vote_registry_url` pour que l'intention soit lisible.
+  - Le tag d'image du worker appartient au pipeline : `ignore_changes` sur `docker_image_name`, sans quoi le `terraform apply` suivant annulerait le dernier déploiement. Terraform ne pose que la valeur d'amorçage, et **le worker ne démarre pas tant que le pipeline n'a pas tourné une première fois**.
+  - `azurerm_app_service_virtual_network_swift_connection` remplacée par l'argument `virtual_network_subnet_id` sur chaque app : le provider interdit de mélanger les deux, et l'argument porté par la ressource évite une ressource séparée par application.
 - [x] Base de données : `azurerm_postgresql_flexible_server` B1ms, en accès privé (sous-réseau délégué + zone DNS privée dédiée, pas de private endpoint — un serveur flexible ne fonctionne pas ainsi). Base applicative `votes`, mot de passe généré par `random_password` pour qu'aucun identifiant ne transite par `terraform.tfvars`.
   - Pas de `prevent_destroy`, à l'inverse de ce que la fiche de conventions prévoyait pour ce type : les votes sont des données de démonstration régénérables, et la protection contaminerait le resource group entier en bloquant le `terraform destroy` de teardown. La fiche est corrigée en conséquence.
   - Piège du provider : `azurerm_postgresql_flexible_server_database` porte un `prevent_destroy` **implicite**. Sans `lifecycle { prevent_destroy = false }`, le teardown échoue au plan sans dire d'où vient la protection.
