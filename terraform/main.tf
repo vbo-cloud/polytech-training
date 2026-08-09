@@ -195,7 +195,12 @@ resource "azurerm_linux_web_app" "vote" {
   }
 
   app_settings = {
-    "REDIS_CONNECTION_STRING"             = "rediss://:${azurerm_redis_cache.redis.primary_access_key}@${azurerm_redis_cache.redis.hostname}:6380/0"
+    # `urlencode` n'est pas cosmétique : une clé d'accès Azure fait 44
+    # caractères base64, donc contient un `/` environ une fois sur deux. Non
+    # encodée, elle termine le `netloc` de l'URL au premier `/`, et
+    # `redis.from_url()` se connecte à un hôte tronqué. Le tirage se fait à
+    # chaque création du cache — l'infra marcherait ou non selon le run.
+    "REDIS_CONNECTION_STRING"             = "rediss://:${urlencode(azurerm_redis_cache.redis.primary_access_key)}@${azurerm_redis_cache.redis.hostname}:6380/0"
     "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
   }
 
