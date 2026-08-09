@@ -1,6 +1,6 @@
 ---
 name: terraform-conventions
-description: Conventions Terraform du projet polytech-training — nommage Azure (rg-poly-dev-frc, asp-poly-dev-frc...), tags, règles de lifecycle/protection sur les ressources porteuses de données (futur Postgres), checklist sécurité et coût, commandes courantes. Utilise ce skill avant d'écrire ou modifier tout fichier .tf, de créer une resource group / ressource Azure, de nommer une ressource, ou de reviewer un diff touchant terraform/ — même si l'utilisateur ne dit pas explicitement "convention" ou "Terraform". Adapté depuis les conventions terraform du projet job-finder ; nomenclature ajustée au périmètre plus restreint de ce projet (pas de landing zone, un seul environnement + deployment slots App Service).
+description: Conventions Terraform du projet polytech-training — nommage Azure (rg-poly-dev-frc, asp-poly-dev-frc...), tags, règles de lifecycle/protection et pourquoi ce projet n'en pose aucune (Postgres compris), checklist sécurité et coût, commandes courantes. Utilise ce skill avant d'écrire ou modifier tout fichier .tf, de créer une resource group / ressource Azure, de nommer une ressource, ou de reviewer un diff touchant terraform/ — même si l'utilisateur ne dit pas explicitement "convention" ou "Terraform". Adapté depuis les conventions terraform du projet job-finder ; nomenclature ajustée au périmètre plus restreint de ce projet (pas de landing zone, un seul environnement + deployment slots App Service).
 ---
 
 # Conventions Terraform — projet polytech-training
@@ -76,15 +76,17 @@ terraform apply -input=false
 
 ## Règles de lifecycle sur les ressources critiques
 
-`prevent_destroy = true` sur les ressources qui **stockent durablement** des données :
-- `azurerm_postgresql_flexible_server` (si Sprint 4 l'introduit) — seule ressource de cette catégorie à ce jour ; les votes agrégés y vivent, les reperdre est irréversible.
+`prevent_destroy = true` protège les données **irremplaçables**. Le critère n'est pas « cette ressource stocke », c'est « reperdre ce qu'elle contient coûte cher ».
 
-**Aucune ressource déclarée dans `terraform/` n'entre dans cette catégorie.** `terraform/` ne contient donc aucun bloc `prevent_destroy`, et c'est volontaire.
+**Aucune ressource de `terraform/` ne remplit ce critère, `azurerm_postgresql_flexible_server` compris, et le dossier ne contient donc aucun `prevent_destroy`.** C'est un choix, pas un oubli — sur un projet de démonstration, la protection coûte plus qu'elle ne rapporte.
 
-**Explicitement exclus tant que le projet est en phase démo :**
-- `azurerm_resource_group` — le protéger bloquerait à la fois un renommage de ressource et le `terraform destroy` de teardown, alors que détruire l'infra entre deux sessions est justement le levier de coût principal (cf. checklist ci-dessous). Le RG ne porte aucune donnée par lui-même.
-- `azurerm_redis_cache` — c'est une **file de messages transitoire**, pas un stockage : les votes y passent quelques millisecondes avant que le worker ne les écrive en Postgres. Rien à protéger. Et le protéger reviendrait exactement à protéger le RG, puisqu'un RG ne peut pas être détruit sans son contenu : le teardown échouerait au `plan`.
-- `azurerm_container_registry` — aucun ACR n'existe ni n'est décidé à ce jour. Les images consommées viennent du registre d'Avisto (`rgy.k8s.devops-svc-ag.com`). Si un ACR est introduit, l'ajouter ici **et** tracer la décision dans `SUIVI.md`.
+- `azurerm_postgresql_flexible_server` — c'est la seule ressource qui stocke durablement, et elle reste non protégée. Les votes qui y vivent sont des données de démonstration, régénérables en une minute par le front. Le poser interdirait le `terraform destroy` de teardown, principal levier de coût du projet, pour préserver quelque chose qui ne vaut rien. Le jour où le projet porte des données réelles, cette ligne est la première à changer.
+- `azurerm_resource_group` — le protéger bloquerait à la fois un renommage de ressource et le teardown, alors que détruire l'infra entre deux sessions est le levier de coût principal (cf. checklist ci-dessous). Le RG ne porte aucune donnée par lui-même.
+- `azurerm_redis_cache` — c'est une **file de messages transitoire**, pas un stockage : les votes y passent quelques millisecondes avant que le worker ne les écrive en Postgres. Rien à protéger.
+- `azurerm_container_registry` — il ne contient que des images reconstructibles par le pipeline à partir du dépôt Git. Perdre le registre coûte un run de pipeline.
+
+Attention à un piège du provider, distinct de la règle ci-dessus :
+`azurerm_postgresql_flexible_server_database` porte un `prevent_destroy = true` **implicite**. Sans un bloc `lifecycle { prevent_destroy = false }` explicite, le `terraform destroy` échoue au plan — et le message ne dit pas d'où vient la protection.
 
 Deux pièges à garder en tête avant de poser un `prevent_destroy` :
 - il interdit aussi les changements qui **forcent un remplacement** (renommage inclus) — le poser sur une ressource dont le nom n'est pas stabilisé, c'est se bloquer soi-même ;

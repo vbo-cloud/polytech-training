@@ -158,6 +158,118 @@ resource "azurerm_private_dns_zone_virtual_network_link" "redis_dns_link" {
 }
 
 # ==============================================================================
+# PostgreSQL flexible server
+# ==============================================================================
+# Le worker écrit les votes ici. Le serveur est en accès privé (VNET
+# integration), pas en accès public filtré : il n'a aucun consommateur hors du
+# VNET, et un serveur exposé avec sa seule règle de pare-feu reste à portée de
+# toute IP autorisée par erreur.
+#
+# L'accès privé impose un sous-réseau dédié et délégué — un serveur flexible ne
+# partage pas son subnet — et sa propre zone DNS privée, distincte du modèle
+# private endpoint utilisé pour le Redis.
+resource "azurerm_subnet" "psql" {
+  name                 = "snet-psql-${local.base_name}"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = ["10.0.3.0/24"]
+
+  delegation {
+    name = "delegation-postgresql"
+    service_delegation {
+      name = "Microsoft.DBforPostgreSQL/flexibleServers"
+      actions = [
+        "Microsoft.Network/virtualNetworks/subnets/join/action"
+      ]
+    }
+  }
+}
+
+# Contrairement à la zone privatelink du Redis, dont le nom est imposé par
+# Azure, celle d'un serveur flexible est libre — seul le suffixe
+# `.postgres.database.azure.com` l'est.
+resource "azurerm_private_dns_zone" "psql_dns" {
+  name                = "${local.base_name}.private.postgres.database.azure.com"
+  resource_group_name = azurerm_resource_group.rg.name
+
+  tags = local.tags
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "psql_dns_link" {
+  name                  = "pdnsl-psql-${local.base_name}"
+  resource_group_name   = azurerm_resource_group.rg.name
+  private_dns_zone_name = azurerm_private_dns_zone.psql_dns.name
+  virtual_network_id    = azurerm_virtual_network.vnet.id
+
+  tags = local.tags
+}
+
+# Généré plutôt que saisi : un mot de passe en variable finit dans
+# `terraform.tfvars`, donc dans Git. Il reste en clair dans le state, comme la
+# clé Redis — même dette, déjà tracée dans SUIVI.md, même cible (Key Vault +
+# identité managée). Ce que ça supprime, c'est le passage par le dépôt.
+resource "random_password" "psql_admin" {
+  length      = 32
+  min_upper   = 1
+  min_lower   = 1
+  min_numeric = 1
+  special     = true
+
+  # Azure refuse `'`, `"`, `@` et `/` dans le mot de passe administrateur.
+  override_special = "!#$%&*()-_=+[]{}"
+}
+
+resource "azurerm_postgresql_flexible_server" "psql" {
+  name                = "psql-${local.base_name}-${random_string.suffix.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  version    = "16"
+  sku_name   = "B_Standard_B1ms"
+  storage_mb = 32768
+
+  administrator_login    = var.postgresql_administrator_login
+  administrator_password = random_password.psql_admin.result
+
+  # Le mode privé est activé par la seule présence de ces deux arguments : le
+  # provider refuse de les combiner avec `public_network_access_enabled = true`.
+  delegated_subnet_id = azurerm_subnet.psql.id
+  private_dns_zone_id = azurerm_private_dns_zone.psql_dns.id
+
+  backup_retention_days        = 7
+  geo_redundant_backup_enabled = false
+
+  # Sans cette dépendance explicite, Terraform peut créer le serveur avant que
+  # la zone ne soit liée au VNET : le serveur est alors joignable par IP mais
+  # son nom ne résout pas, et l'erreur ne se voit qu'au premier démarrage du
+  # worker.
+  depends_on = [azurerm_private_dns_zone_virtual_network_link.psql_dns_link]
+
+  # Pas de `prevent_destroy`, à l'inverse de ce que SKILL.md prévoit pour ce
+  # type : la règle vise les données irremplaçables, et ces votes sont des
+  # données de démonstration régénérables en une minute. Le poser bloquerait le
+  # `terraform destroy` de teardown — un `prevent_destroy` contamine tout le
+  # resource group — qui est le principal levier de coût du projet. La fiche est
+  # mise à jour dans le même commit.
+  tags = local.tags
+}
+
+# Base applicative dédiée plutôt que la base de maintenance `postgres` utilisée
+# en local par `compose.yaml`. Le worker y crée sa table `votes` au démarrage.
+resource "azurerm_postgresql_flexible_server_database" "votes" {
+  name      = "votes"
+  server_id = azurerm_postgresql_flexible_server.psql.id
+  collation = "en_US.utf8"
+  charset   = "utf8"
+
+  # Le provider détruit la base au `destroy` ; sans ça il refuse, la protection
+  # par défaut visant les bases de production.
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+
+# ==============================================================================
 # Container registry
 # ==============================================================================
 # Le pipeline Azure DevOps y pousse l'image du worker ; les App Services l'en

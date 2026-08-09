@@ -52,7 +52,10 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 
 ## Sprint 4 — Infra Azure (Terraform)
 
-- [ ] Étendre `terraform/main.tf` : App Service pour `worker` + `result`, base de données, Azure Cache for Redis
+- [ ] Étendre `terraform/main.tf` : App Service pour `worker` + `result`
+- [x] Base de données : `azurerm_postgresql_flexible_server` B1ms, en accès privé (sous-réseau délégué + zone DNS privée dédiée, pas de private endpoint — un serveur flexible ne fonctionne pas ainsi). Base applicative `votes`, mot de passe généré par `random_password` pour qu'aucun identifiant ne transite par `terraform.tfvars`.
+  - Pas de `prevent_destroy`, à l'inverse de ce que la fiche de conventions prévoyait pour ce type : les votes sont des données de démonstration régénérables, et la protection contaminerait le resource group entier en bloquant le `terraform destroy` de teardown. La fiche est corrigée en conséquence.
+  - Piège du provider : `azurerm_postgresql_flexible_server_database` porte un `prevent_destroy` **implicite**. Sans `lifecycle { prevent_destroy = false }`, le teardown échoue au plan sans dire d'où vient la protection.
 - [ ] Application Insights
 - [ ] Variables/outputs propres — un seul environnement, un seul `terraform.tfvars` (décision #13)
 - [x] `terraform/` aligné sur les conventions de nommage du projet : `{type}-[role-]poly-dev-frc` construit via `local.base_name`, tags `environment`/`project`/`owner` sur toutes les ressources Azure dont le type expose l'argument — les 2 subnets et la swift connection ne l'exposent pas côté provider —, région France Central. Rien n'était déployé, donc renommage sans recréation.
