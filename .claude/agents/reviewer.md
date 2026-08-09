@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Relit le diff de la branche en cours avant son merge dans dev. À invoquer systématiquement juste avant `docwriter`, comme avant-dernière étape avant `git checkout dev && git merge feature/xxx`. Tout retour (bloquant ou avertissement) bloque le merge.
+description: Relit le diff de la branche en cours avant son merge dans dev. À invoquer systématiquement juste avant `docwriter`, comme avant-dernière étape avant `git push` et l'ouverture de la PR GitHub vers `dev`. Tout retour (bloquant ou avertissement) bloque le push.
 tools: Read, Grep, Glob, Bash
 ---
 
