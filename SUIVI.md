@@ -45,10 +45,25 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 
 ## Sprint 3 — CI/CD Azure DevOps
 
-- [ ] Créer le projet Azure DevOps, connecter le repo GitHub
-- [ ] Pipeline YAML : build → test → publish
-- [ ] Étape deploy vers Azure App Service
-- [ ] Deployment slots dev/prod (swap sans downtime)
+- [x] Créer le projet Azure DevOps, connecter le repo GitHub — connexion de service `arm-poly-dev`, SP `sp-poly-pipeline-dev` scopé à `rg-poly-dev-frc`
+- [x] Pipeline YAML : build → test → publish, worker uniquement (décisions #10/#11)
+- [x] Étape deploy vers Azure App Service
+- [x] ~~Deployment slots dev/prod~~ — abandonnés, décision #11 révisée : ils imposent un plan Standard. Un seul environnement Azure DevOps, `polytech-training-dev` ; rien ne s'appelle « prod ».
+- [x] `terraform plan` sur PR vers `dev`, `terraform apply` au merge — l'infra est pilotée par le pipeline, plus à la main.
+- [x] Tests : le worker n'en avait aucun. `worker.Tests/` couvre `Program.ParseVote`, seule logique isolable sans connexion réseau. Un stage `test` vide au vert vaut moins que pas de stage.
+- À configurer côté Azure DevOps avant le premier run (rien de tout ça ne vit dans le YAML) :
+  - groupe de variables `polytech-training-dev`, contenant **une seule entrée** : `azureServiceConnection` = `arm-poly-dev`, le nom de la connexion de service ARM.
+    - N'y mettre ni `resourceGroupName`, ni `acrName`, ni `acrLoginServer`, ni `workerWebAppName` : le stage `Infra` les publie depuis `terraform output` et les stages suivants les lisent de là. Une entrée de groupe portant le même nom serait écrasée par la variable de stage, sans erreur — deux sources de vérité qui divergent en silence au premier teardown.
+    - Aucun secret, et c'est le résultat visé : l'authentification passe par la connexion de service et l'identité managée de l'App Service ; l'ACR a `admin_enabled = false` et les chaînes de connexion sont écrites par Terraform dans les `app_settings`.
+  - environnement `polytech-training-dev`, qui sert d'historique de déploiement. Une approbation manuelle peut y être attachée depuis l'interface, mais rien ne l'exige : le merge sur `dev` vaut décision.
+    - À savoir si tu en poses une : elle ne couvrirait **que** le stage `Deploy`. Le `terraform apply` du stage `Infra` n'a pas d'`environment:`, donc aucun contrôle possible, et c'est pourtant l'étape qui peut remplacer ou détruire des ressources. L'y soumettre demanderait de convertir le job `Terraform` en `deployment` rattaché à un environnement.
+- Dette et choix assumés du pipeline :
+  - `az acr build` plutôt que `Docker@2` : le projet n'a qu'une connexion de service ARM, `Docker@2` en exigerait une seconde de type Docker Registry, avec ses propres identifiants. Le build tourne côté ACR, donc sans démon Docker sur l'agent.
+  - L'image est reconstruite à partir de `worker/Dockerfile`, qui recompile le projet — redite du stage `build`. Le Dockerfile est celui du `docker compose` local ; en maintenir une variante CI consommant un artefact ferait diverger l'image testée en local de celle déployée. Le cache NuGet limite le coût réel.
+  - `trigger.branches` inclut encore `main`, et il n'y a qu'un seul state distant. Un merge vers `main` appliquerait donc le Terraform de `main` sur le state de `dev`. Sans effet tant que `main` reste au repos (décision de branching), mais l'`apply` étant désormais automatique, il faudra une garde sur `Build.SourceBranch` — ou un second state — le jour où `main` se réveille.
+  - `Npgsql` 4.1.9 est signalé vulnérable (NU1903, GHSA-x9vc-6hfv-hg8c) au restore. Non traité ici : le Sprint 2 remplace l'accès Npgsql brut par EF Core.
+  - Le worker déclare sa **vivacité**, pas sa **disponibilité** : `/healthz` répond 200 dès le démarrage, avant même que Postgres et Redis ne soient joignables. C'est volontaire — un conteneur qui ne lie jamais son port est recyclé en boucle par App Service. Conséquence à connaître : une version incapable de joindre ses dépendances est déployée sans que rien ne le signale. Distinguer les deux demande un état partagé entre la boucle de traitement et le listener, prévu au Sprint 2.
+  - Les stages `Publish` et `Deploy`, ainsi que le pas `terraform apply`, sont désactivés sur les validations de PR (`Build.Reason`). Une PR compile, teste et affiche le `plan` — elle montre ce qu'elle changerait sans rien changer.
 
 ## Sprint 4 — Infra Azure (Terraform)
 

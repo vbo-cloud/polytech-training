@@ -1,0 +1,359 @@
+# Pipeline Azure DevOps du worker .NET — build, test, infrastructure,
+# publication de l'image dans l'ACR du projet, déploiement sur App Service.
+#
+# Une PR vers `dev` compile, teste et affiche le `plan` Terraform, sans rien
+# créer ni déployer. Un merge sur `dev` applique le plan, pousse l'image et
+# déploie. Un seul environnement, `dev` (décision #13) : rien ne s'appelle
+# « prod » ici.
+#
+# Périmètre volontairement limité à `worker/`. Les fronts `vote` (Python) et
+# `result` (Node.js) restent déployés depuis le registre public d'Avisto :
+# les réécrire ou les industrialiser n'apporterait rien côté DevOps
+# (cf. CLAUDE.md, décision de scope #3).
+
+trigger:
+  branches:
+    include:
+      - dev
+      - main
+  # Un commit qui ne touche ni le worker ni ce fichier ne peut pas changer
+  # l'image produite. Sans ce filtre, une correction de README déclenche un
+  # build, un push d'image et un déploiement.
+  paths:
+    include:
+      - worker/*
+      - worker.Tests/*
+      - terraform/*
+      - azure-pipelines.yml
+
+# Les filtres de chemin ne s'héritent pas du déclencheur CI : sans cette
+# répétition, une PR qui ne touche que le README lancerait le pipeline complet.
+pr:
+  branches:
+    include:
+      - dev
+      - main
+  paths:
+    include:
+      - worker/*
+      - worker.Tests/*
+      - terraform/*
+      - azure-pipelines.yml
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # Le groupe ne contient qu'`azureServiceConnection`, le nom de la connexion
+  # de service ARM. Les noms de ressources n'y sont **pas** : ils portent le
+  # suffixe aléatoire tiré par Terraform à la création, donc ils changent à
+  # chaque cycle `destroy` / `apply` — et le teardown entre deux sessions est
+  # la routine documentée du projet. Recopiés à la main ici, ils seraient
+  # périmés dès le premier teardown, et `Publish` échouerait sur un registre
+  # qui n'existe plus. Le stage `Infra` les publie lui-même depuis
+  # `terraform output`.
+  #
+  # Le groupe ne contient aucun secret, et c'est le résultat recherché :
+  # l'authentification passe entièrement par la connexion de service ARM et par
+  # l'identité managée de l'App Service. Il n'existe ni mot de passe de
+  # registre — l'ACR a `admin_enabled = false` — ni chaîne de connexion à
+  # transporter : Terraform les écrit directement dans les `app_settings`.
+  # Le jour où un secret devient nécessaire, il entre ici, marqué « secret »,
+  # jamais dans le YAML.
+  - group: polytech-training-dev
+
+  - name: dotnetVersion
+    value: 8.0.x
+  - name: workerProject
+    value: worker/Worker.csproj
+  - name: testProject
+    value: worker.Tests/Worker.Tests.csproj
+  - name: imageRepository
+    value: polytech/worker
+  # Le tag identifie le run qui l'a produit. `latest` est proscrit ici comme
+  # dans Terraform : il rend impossible de dire quelle version tourne.
+  - name: imageTag
+    value: $(Build.BuildId)
+  # Le cache NuGet a besoin d'un dossier stable et connu des deux stages.
+  - name: NUGET_PACKAGES
+    value: $(Pipeline.Workspace)/.nuget/packages
+
+stages:
+  # ============================================================================
+  - stage: Build
+    displayName: Build
+    jobs:
+      - job: BuildWorker
+        displayName: Compile the worker
+        steps:
+          - task: UseDotNet@2
+            displayName: Install the .NET SDK
+            inputs:
+              packageType: sdk
+              version: $(dotnetVersion)
+
+          - task: Cache@2
+            displayName: Restore the NuGet cache
+            inputs:
+              # La clé inclut les `.csproj` : toute modification de dépendance
+              # invalide le cache, exactement comme un changement de
+              # `requirements.txt` invalide un layer Docker.
+              key: 'nuget | "$(Agent.OS)" | **/*.csproj'
+              restoreKeys: |
+                nuget | "$(Agent.OS)"
+              path: $(NUGET_PACKAGES)
+
+          # Les deux projets, pas seulement le worker. La clé de cache porte sur
+          # `**/*.csproj` : ne restaurer que le worker enregistrerait un cache
+          # sans xunit ni le SDK de test, et le stage Test obtiendrait un *hit*
+          # sur cette même clé sans jamais pouvoir la compléter — les paquets de
+          # test seraient retéléchargés à chaque run, indéfiniment.
+          - task: DotNetCoreCLI@2
+            displayName: Restore dependencies
+            inputs:
+              command: restore
+              projects: |
+                $(workerProject)
+                $(testProject)
+
+          - task: DotNetCoreCLI@2
+            displayName: Build
+            inputs:
+              command: build
+              projects: |
+                $(workerProject)
+                $(testProject)
+              arguments: --configuration Release --no-restore
+
+  # ============================================================================
+  - stage: Test
+    displayName: Test
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - job: TestWorker
+        displayName: Run the unit tests
+        steps:
+          - task: UseDotNet@2
+            displayName: Install the .NET SDK
+            inputs:
+              packageType: sdk
+              version: $(dotnetVersion)
+
+          # Même clé qu'au stage Build, qui a restauré les deux projets : le
+          # cache contient donc aussi les paquets de test, et le restore ne
+          # retélécharge rien. C'est ce qui rend acceptable de ne pas transporter
+          # d'artefact compilé entre les stages — la compilation est à refaire
+          # ici de toute façon, seul le téléchargement est mutualisé.
+          - task: Cache@2
+            displayName: Restore the NuGet cache
+            inputs:
+              key: 'nuget | "$(Agent.OS)" | **/*.csproj'
+              restoreKeys: |
+                nuget | "$(Agent.OS)"
+              path: $(NUGET_PACKAGES)
+
+          - task: DotNetCoreCLI@2
+            displayName: Test
+            inputs:
+              command: test
+              projects: $(testProject)
+              arguments: --configuration Release --logger trx
+              publishTestResults: true
+
+  # ============================================================================
+  # `plan` sur une PR, `plan` puis `apply` sur un merge. La distinction tient
+  # dans la condition du second pas : une PR montre ce qu'elle changerait,
+  # un merge le fait.
+  #
+  # Le `plan` est enregistré dans un fichier et c'est **lui** qui est appliqué,
+  # pas un second calcul. Un `apply` qui replanifie peut exécuter autre chose
+  # que ce qui vient d'être relu, si l'infra a bougé entre les deux.
+  #
+  # Terraform est préinstallé sur l'image `ubuntu-latest`. Le `required_version`
+  # de `providers.tf` fait échouer le stage si l'agent dérive hors de la plage
+  # supportée, plutôt que de laisser passer une version inattendue.
+  - stage: Infra
+    displayName: Infrastructure
+    dependsOn: Test
+    condition: succeeded()
+    jobs:
+      - job: Terraform
+        displayName: Plan and apply the infrastructure
+        steps:
+          # `addSpnToEnvironment` expose les identifiants du service principal
+          # au script, qui les recopie dans les variables `ARM_*` attendues par
+          # le provider. Sans ça, Terraform ne s'authentifie pas : la tâche
+          # connecte `az`, pas le provider azurerm.
+          - task: AzureCLI@2
+            displayName: terraform init, validate and plan
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: terraform
+              inlineScript: |
+                set -euo pipefail
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+
+                terraform init -input=false
+                terraform fmt -check -recursive
+                terraform validate
+                terraform plan -input=false -out=tfplan
+
+          - task: AzureCLI@2
+            displayName: terraform apply
+            condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: terraform
+              inlineScript: |
+                set -euo pipefail
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+
+                # `init` est rejoué : le pas précédent l'a fait dans le même
+                # espace de travail, mais le redire coûte quelques secondes et
+                # évite de dépendre de cet état implicite.
+                terraform init -input=false
+                terraform apply -input=false -auto-approve tfplan
+
+          # Les noms de ressources sont lus dans le state qui vient d'être
+          # écrit, pas dans un groupe de variables tenu à la main : ils suivent
+          # donc d'eux-mêmes un cycle destroy / apply. `isOutput=true` les rend
+          # visibles des stages suivants, sous la forme
+          # `dependencies.Infra.outputs['Terraform.tfOutputs.<nom>']`.
+          - task: AzureCLI@2
+            name: tfOutputs
+            displayName: Export the terraform outputs
+            condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              addSpnToEnvironment: true
+              workingDirectory: terraform
+              inlineScript: |
+                set -euo pipefail
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_CLIENT_SECRET="$servicePrincipalKey"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_SUBSCRIPTION_ID="$(az account show --query id -o tsv)"
+
+                terraform init -input=false
+
+                emit () {
+                  value=$(terraform output -raw "$1")
+                  echo "##vso[task.setvariable variable=$2;isOutput=true]$value"
+                  echo "$2 = $value"
+                }
+
+                emit resource_group_name  resourceGroupName
+                emit acr_name             acrName
+                emit acr_login_server     acrLoginServer
+                emit worker_web_app_name  workerWebAppName
+
+  # ============================================================================
+  - stage: Publish
+    displayName: Publish image
+    # Sur `Infra` et non sur `Test` : l'ACR où pousser l'image est créé par
+    # `terraform apply`. Sur une PR ce stage ne tourne pas de toute façon.
+    dependsOn: Infra
+    # Le nom du registre vient du state Terraform, pas du groupe de variables :
+    # il change à chaque cycle destroy / apply.
+    variables:
+      acrName: $[ dependencies.Infra.outputs['Terraform.tfOutputs.acrName'] ]
+    # Une validation de PR s'arrête après les tests. Sans cette garde, elle
+    # pousserait une image et déploierait le worker depuis une branche que
+    # personne n'a encore relue. L'approbation posée sur l'environnement ne
+    # suffit pas à s'en protéger : elle obligerait quelqu'un à statuer sur
+    # chaque PR, au lieu de ne jamais poser la question.
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: PublishImage
+        displayName: Build and push the worker image
+        steps:
+          # `az acr build` plutôt que Docker@2 : le projet n'a qu'une connexion
+          # de service ARM, et cette commande s'en contente. Docker@2 exigerait
+          # une seconde connexion, de type Docker Registry, avec ses propres
+          # identifiants à maintenir. Le build s'exécute côté ACR, donc sans
+          # dépendre d'un démon Docker sur l'agent.
+          #
+          # L'image est reconstruite à partir de `worker/Dockerfile`, qui
+          # recompile le projet en interne. C'est une redite assumée du stage
+          # Build : ce Dockerfile est celui qui sert aussi au `docker compose`
+          # local, et en maintenir une variante CI qui consommerait un artefact
+          # ferait diverger l'image testée en local de celle déployée.
+          #
+          # `--file` est relatif au contexte passé en dernier argument, pas au
+          # répertoire de travail de l'agent : `--file worker/Dockerfile` avec
+          # le contexte `worker/` ferait chercher `worker/worker/Dockerfile`.
+          - task: AzureCLI@2
+            displayName: az acr build
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az acr build \
+                  --registry "$(acrName)" \
+                  --image "$(imageRepository):$(imageTag)" \
+                  --file Dockerfile \
+                  worker/
+
+  # ============================================================================
+  - stage: Deploy
+    displayName: Deploy
+    # Les deux dépendances comptent : `Publish` fournit l'image, `Infra`
+    # fournit l'App Service qui la reçoit. `Infra` dépendant lui-même de
+    # `Test`, un test rouge arrête toute la chaîne.
+    dependsOn:
+      - Infra
+      - Publish
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    variables:
+      resourceGroupName: $[ dependencies.Infra.outputs['Terraform.tfOutputs.resourceGroupName'] ]
+      acrLoginServer: $[ dependencies.Infra.outputs['Terraform.tfOutputs.acrLoginServer'] ]
+      workerWebAppName: $[ dependencies.Infra.outputs['Terraform.tfOutputs.workerWebAppName'] ]
+    jobs:
+      # Déploiement direct sur l'application, sans slot intermédiaire. Le plan
+      # App Service est en Basic, qui n'offre aucun deployment slot (décision
+      # #11) : il n'y a donc rien à promouvoir, et le stage `Promote` qui
+      # échangeait les slots a disparu avec lui.
+      #
+      # L'environnement `polytech-training-dev` sert d'abord à l'historique de
+      # déploiement qu'Azure DevOps y tient. Une approbation manuelle peut y
+      # être attachée depuis l'interface, mais aucune n'est requise : le projet
+      # n'a qu'un environnement, et le merge sur `dev` vaut décision. Les
+      # contrôles d'un environnement sont de toute façon évalués au démarrage
+      # du stage, donc avant le job.
+      #
+      # Conséquence assumée du passage en Basic : le déploiement provoque un
+      # redémarrage du conteneur, quelques secondes pendant lesquelles la file
+      # `votes` n'est pas dépilée. Les votes s'y accumulent et sont traités au
+      # redémarrage — rien n'est perdu, le front reste disponible. Un slot
+      # supprimerait cette coupure ; il coûte le passage en Standard.
+      - deployment: DeployWorker
+        displayName: Deploy the worker
+        environment: polytech-training-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureWebAppContainer@1
+                  displayName: Deploy the image to the worker web app
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    appName: $(workerWebAppName)
+                    resourceGroupName: $(resourceGroupName)
+                    containers: $(acrLoginServer)/$(imageRepository):$(imageTag)
