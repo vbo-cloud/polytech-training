@@ -1,20 +1,20 @@
 ---
 name: terraform-conventions
-description: Conventions Terraform du projet polytech-training — nommage Azure (rg-poly-dev-frc, asp-poly-dev-frc...), tags, règles de lifecycle/protection sur les ressources porteuses de données (futur Postgres), checklist sécurité et coût, commandes courantes. Utilise ce skill avant d'écrire ou modifier tout fichier .tf, de créer une resource group / ressource Azure, de nommer une ressource, ou de reviewer un diff touchant terraform/ — même si l'utilisateur ne dit pas explicitement "convention" ou "Terraform". Adapté depuis les conventions terraform du projet job-finder ; nomenclature ajustée au périmètre plus restreint de ce projet (pas de landing zone, un seul environnement + deployment slots App Service).
+description: Conventions Terraform du projet polytech-training — nommage Azure (rg-poly-dev-frc, asp-poly-dev-frc...), tags, règles de lifecycle/protection et pourquoi ce projet n'en pose aucune (Postgres compris), checklist sécurité et coût, commandes courantes. Utilise ce skill avant d'écrire ou modifier tout fichier .tf, de créer une resource group / ressource Azure, de nommer une ressource, ou de reviewer un diff touchant terraform/ — même si l'utilisateur ne dit pas explicitement "convention" ou "Terraform". Adapté depuis les conventions terraform du projet job-finder ; nomenclature ajustée au périmètre plus restreint de ce projet (pas de landing zone, un seul environnement, pas de deployment slots).
 ---
 
 # Conventions Terraform — projet polytech-training
 
-Ces règles sont adaptées de celles du projet `job-finder` et resserrées sur ce périmètre : pas de landing zone, un seul environnement, dev/prod simulés via deployment slots App Service.
+Ces règles sont adaptées de celles du projet `job-finder` et resserrées sur ce périmètre : pas de landing zone, un seul environnement, pas de deployment slots (décision #11 de `CLAUDE.md`).
 
-Elles décrivent la cible, pas nécessairement l'état courant de `terraform/` — la fiche est écrite avant l'alignement du dossier, qui est traité dans une branche dédiée. Vérifier le code avant de supposer qu'une règle y est déjà appliquée.
+Elles décrivent la cible, pas nécessairement l'état courant de `terraform/`. Vérifier le code avant de supposer qu'une règle y est déjà appliquée — c'est vrai en permanence, pas seulement au moment où cette fiche a été écrite.
 
 ## Nommage
 
 - Cloud provider : Azure only.
 - Pattern de nommage : `{type}-{role?}-{project}-{environment}-{region}-{index?}`
   - Projet : `poly`
-  - Environnement : `dev` (un seul environnement, cf. `CLAUDE.md` décision #13 — dev/prod simulés via deployment slots App Service, pas d'environnements Terraform séparés)
+  - Environnement : `dev` (un seul environnement, cf. `CLAUDE.md` décision #13 — pas de séparation dev/prod, ni par `.tfvars` ni par deployment slots)
   - Région : `frc` (France Central, cf. `CLAUDE.md` décision #14)
   - Rôle : optionnel, quand plusieurs ressources du même type se distinguent par leur **rôle** et non par un compteur. `snet-platform-poly-dev-frc` et `snet-asp-poly-dev-frc` restent lisibles là où `snet-poly-dev-frc-1` / `-2` ne dit plus rien.
   - Index : optionnel, seulement quand plusieurs instances du même type sont réellement interchangeables. Role et index ne s'utilisent pas ensemble.
@@ -76,15 +76,17 @@ terraform apply -input=false
 
 ## Règles de lifecycle sur les ressources critiques
 
-`prevent_destroy = true` sur les ressources qui **stockent durablement** des données :
-- `azurerm_postgresql_flexible_server` (si Sprint 4 l'introduit) — seule ressource de cette catégorie à ce jour ; les votes agrégés y vivent, les reperdre est irréversible.
+`prevent_destroy = true` protège les données **irremplaçables**. Le critère n'est pas « cette ressource stocke », c'est « reperdre ce qu'elle contient coûte cher ».
 
-**Aucune ressource déclarée dans `terraform/` n'entre dans cette catégorie.** `terraform/` ne contient donc aucun bloc `prevent_destroy`, et c'est volontaire.
+**Aucune ressource de `terraform/` ne remplit ce critère, `azurerm_postgresql_flexible_server` compris, et le dossier ne contient donc aucun `prevent_destroy`.** C'est un choix, pas un oubli — sur un projet de démonstration, la protection coûte plus qu'elle ne rapporte.
 
-**Explicitement exclus tant que le projet est en phase démo :**
-- `azurerm_resource_group` — le protéger bloquerait à la fois un renommage de ressource et le `terraform destroy` de teardown, alors que détruire l'infra entre deux sessions est justement le levier de coût principal (cf. checklist ci-dessous). Le RG ne porte aucune donnée par lui-même.
-- `azurerm_redis_cache` — c'est une **file de messages transitoire**, pas un stockage : les votes y passent quelques millisecondes avant que le worker ne les écrive en Postgres. Rien à protéger. Et le protéger reviendrait exactement à protéger le RG, puisqu'un RG ne peut pas être détruit sans son contenu : le teardown échouerait au `plan`.
-- `azurerm_container_registry` — aucun ACR n'existe ni n'est décidé à ce jour. Les images consommées viennent du registre d'Avisto (`rgy.k8s.devops-svc-ag.com`). Si un ACR est introduit, l'ajouter ici **et** tracer la décision dans `SUIVI.md`.
+- `azurerm_postgresql_flexible_server` — c'est la seule ressource qui stocke durablement, et elle reste non protégée. Les votes qui y vivent sont des données de démonstration, régénérables en une minute par le front. Le poser interdirait le `terraform destroy` de teardown, principal levier de coût du projet, pour préserver quelque chose qui ne vaut rien. Le jour où le projet porte des données réelles, cette ligne est la première à changer.
+- `azurerm_resource_group` — le protéger bloquerait à la fois un renommage de ressource et le teardown, alors que détruire l'infra entre deux sessions est le levier de coût principal (cf. checklist ci-dessous). Le RG ne porte aucune donnée par lui-même.
+- `azurerm_redis_cache` — c'est une **file de messages transitoire**, pas un stockage : les votes y passent quelques millisecondes avant que le worker ne les écrive en Postgres. Rien à protéger.
+- `azurerm_container_registry` — il ne contient que des images reconstructibles par le pipeline à partir du dépôt Git. Perdre le registre coûte un run de pipeline.
+
+Attention à un piège du provider, distinct de la règle ci-dessus :
+`azurerm_postgresql_flexible_server_database` porte un `prevent_destroy = true` **implicite**. Sans un bloc `lifecycle { prevent_destroy = false }` explicite, le `terraform destroy` échoue au plan — et le message ne dit pas d'où vient la protection.
 
 Deux pièges à garder en tête avant de poser un `prevent_destroy` :
 - il interdit aussi les changements qui **forcent un remplacement** (renommage inclus) — le poser sur une ressource dont le nom n'est pas stabilisé, c'est se bloquer soi-même ;
@@ -95,7 +97,7 @@ Deux pièges à garder en tête avant de poser un `prevent_destroy` :
 - Pas d'IP publique sans justification explicite dans le message de commit/PR.
 - Aucun secret ou mot de passe en clair dans le code Terraform (utiliser des variables, jamais de valeur hardcodée).
 - Vérifier `.gitignore` avant tout premier `apply` sur une nouvelle machine : un state non ignoré est la fuite de secret la plus banale d'un projet Terraform.
-- **Toute ressource PaaS dotée d'un private endpoint doit avoir `public_network_access_enabled = false`.** Les providers laissent l'accès public ouvert par défaut : sans cette ligne, le private endpoint est décoratif et la ressource reste joignable depuis Internet avec sa seule clé. Vaut pour Redis, et pour Postgres/ACR le jour où ils arrivent.
+- **Toute ressource PaaS dotée d'un private endpoint doit avoir `public_network_access_enabled = false`.** Les providers laissent l'accès public ouvert par défaut : sans cette ligne, le private endpoint est décoratif et la ressource reste joignable depuis Internet avec sa seule clé. Vaut pour Redis. Postgres suit le même principe par un mécanisme différent — un serveur flexible ne se met pas derrière un private endpoint, l'accès privé passe par un sous-réseau délégué. L'ACR, lui, reste volontairement public : le SKU Basic ne supporte pas les private endpoints (Premium serait ~4x le coût), justifié en commit.
 - **Fermer l'accès public va toujours par paire avec `vnet_route_all_enabled = true`** sur les App Services qui consomment la ressource. L'intégration VNET régionale route déjà les destinations RFC1918 par défaut, mais **pas la résolution DNS** : sans ce réglage (défaut du provider : `false`), l'app résout le nom public de la ressource hors du VNET, tombe sur son IP publique qu'on vient de fermer, et casse — alors que `terraform plan` ne voit rien. `route_all` étend le routage à `0.0.0.0/0` et fait passer le DNS par le VNET, donc par les zones privatelink qui y sont liées.
   - Ne pas confondre avec `vnet_image_pull_enabled` : laissé à `false`, le pull de l'image continue de passer par le réseau d'infrastructure App Service. C'est ce qui permet de garder un registre public joignable tout en routant le reste par le VNET.
 - Azure Cache for Redis : `minimum_tls_version = "1.2"`.
