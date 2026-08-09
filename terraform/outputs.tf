@@ -1,13 +1,13 @@
 # ==============================================================================
 # Valeurs consommées par le pipeline
 # ==============================================================================
-# Destinées à être lues par le stage `Infra` d'un futur pipeline CI (branche à
-# venir), qui les republierait en variables de pipeline pour les stages
-# `Publish` et `Deploy`. Elles ne sont **pas** recopiées dans un groupe de
-# variables : les noms d'App Service et d'ACR portent le suffixe aléatoire de
-# `random_string`, tiré à chaque création, donc renouvelé à chaque cycle
-# destroy / apply — et le teardown entre deux sessions est la routine du
-# projet. Une valeur figée à la main serait périmée au premier teardown.
+# Lues par le stage `Infra` d'`azure-pipelines.yml`, qui les republie en
+# variables de pipeline pour les stages `Publish` et `Deploy`. Elles ne sont
+# **pas** recopiées dans un groupe de variables : les noms d'App Service et
+# d'ACR portent le suffixe aléatoire de `random_string`, tiré à chaque
+# création, donc renouvelé à chaque cycle destroy / apply — et le teardown
+# entre deux sessions est la routine du projet. Une valeur figée à la main
+# serait périmée au premier teardown.
 #
 # Aucune n'est sensible : ce sont des noms de ressources. Les identifiants
 # n'apparaissent nulle part ici, l'authentification du pipeline passant par la

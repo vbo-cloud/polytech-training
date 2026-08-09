@@ -75,6 +75,12 @@ Ne pas recompiler dans chaque stage. Publier l'artefact une fois (stage Build), 
   artifact: worker-build
 ```
 
+**Exception assumée sur ce projet : le pipeline du worker ne publie aucun artefact.** Ce qui est déployé est une image de conteneur, construite au stage `Publish` et stockée dans l'ACR — c'est elle, l'artefact transporté entre les stages. Une seconde archive `.NET` que rien ne télécharge serait de la conformité de façade.
+
+Ce que la règle vise reste appliqué autrement : le stage `Build` restaure **tous** les `.csproj`, y compris celui du projet de test, pour que le cache NuGet qu'il enregistre couvre bien ce que sa clé annonce. Sans ça le stage `Test` obtient un *hit* sur la même clé, ne peut jamais la compléter, et retélécharge les paquets de test à chaque run — le piège est silencieux, la seule trace est la durée.
+
+Ce qui reste vrai en toutes circonstances : ne jamais **recompiler** ce qui a déjà été compilé pour le déployer. Ici l'image est reconstruite depuis `worker/Dockerfile`, qui recompile en interne — redite tracée dans `SUIVI.md`, acceptée pour que le Dockerfile du `docker compose` local reste l'unique source de l'image.
+
 ## Cache des dépendances
 
 Utiliser `Cache@2` pour les paquets NuGet (`~/.nuget/packages`), pour accélérer les runs répétés — équivalent du cache de layers Docker, même logique : ne pas refaire un travail identique si rien n'a changé.
@@ -85,4 +91,8 @@ La stage Deploy doit dépendre explicitement du succès de la stage Test (`depen
 
 ## Environnements et approbations
 
-Pour le déploiement en production (même simulé via deployment slots, cf. décision de scope), utiliser un `environment:` Azure DevOps avec une approbation manuelle avant le déploiement final — bonne pratique même sur un projet de démonstration, à mentionner en entretien comme réflexe connu même si non implémenté faute de temps.
+Pour tout déploiement visible des utilisateurs, utiliser un `environment:` Azure DevOps avec une approbation manuelle — bonne pratique même sur un projet de démonstration.
+
+**Les contrôles d'un environnement sont évalués au démarrage du stage**, pour tous les environnements que le stage référence, pas au démarrage du job qui les utilise. Poser une approbation sur un second job du même stage la déclenche donc *avant* le premier job. Une étape qui doit être approuvée séparément est un stage séparé.
+
+Ce projet **n'utilise pas de deployment slots** (décision #11 : ils imposent un plan Standard, ~5x le coût de Basic). Le déploiement va directement sur l'application. Contrepartie à connaître : le conteneur redémarre, donc quelques secondes sans traitement. Acceptable ici parce que le worker consomme une file — les messages s'y accumulent — et ne le serait pas pour un service qui répond à des requêtes.

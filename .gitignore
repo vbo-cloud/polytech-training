@@ -11,6 +11,11 @@ voting-app.service
 *.tfstate
 *.tfstate.*
 *.tfplan
+# `terraform plan -out=tfplan` — la forme utilisée par le pipeline — produit un
+# fichier sans point, que `*.tfplan` ne couvre pas. Il contient en clair tout ce
+# que le plan calcule, mot de passe Postgres et clé Redis compris.
+tfplan
+tfplan.*
 .terraform/
 crash.log
 crash.*.log
