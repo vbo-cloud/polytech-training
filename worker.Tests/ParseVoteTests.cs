@@ -55,7 +55,7 @@ namespace Worker.Tests
             // l'exception remonte à la boucle de `Main`, qui annule le token et
             // arrête le worker. Un message illisible suffit donc à le tuer —
             // mais pas à le bloquer : `ListLeftPop` a déjà retiré le message de
-            // la file avant que la conversion n'échoue. App Service redémarre
+            // la file avant que la conversion n'échoue. L'orchestrateur redémarre
             // le conteneur, la charge utile fautive a disparu, et le worker
             // repart. Le vote est perdu, silencieusement ; c'est ce point-là
             // qui reste à corriger, pas une boucle de crash.

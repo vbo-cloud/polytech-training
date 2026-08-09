@@ -19,12 +19,19 @@ namespace Worker
         {
             try
             {
+                // Le serveur de santé démarre avant l'ouverture des connexions,
+                // pas après : `OpenDbConnection` et `OpenRedisConnection` bouclent
+                // indéfiniment tant que leur cible ne répond pas. Démarré ensuite,
+                // le port 8080 n'était jamais lié pendant qu'une dépendance était
+                // indisponible — un orchestrateur qui sonde ce port en conclut que
+                // le conteneur ne démarre pas et le recycle en boucle. Le worker se
+                // déclare vivant, pas prêt : c'est la distinction qui manque encore
+                // ici, à traiter au Sprint 2.
+                Task.Run(() => StartHealthCheckServer(cts.Token));
+
                 var pgsql = OpenDbConnection();
                 var redisConn = OpenRedisConnection();
                 var redis = redisConn.GetDatabase();
-
-                // Start health check server in a separate thread
-                Task.Run(() => StartHealthCheckServer(cts.Token));
 
                 // Keep alive is not implemented in Npgsql yet. This workaround was recommended:
                 // https://github.com/npgsql/npgsql/issues/1214#issuecomment-235828359
