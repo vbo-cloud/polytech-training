@@ -74,6 +74,8 @@ Un par service depuis le Sprint 1 (`vote/`, `result/`, `worker/`). Sans lui, `CO
 
 Pire que « inutile » : un `node_modules/` construit sur l'hôte **écrase silencieusement** celui que `npm ci` vient d'installer dans l'image. Pour `result`, ça fait atterrir les bindings natifs de `pg` compilés pour Windows dans une image Linux.
 
+**Ne jamais exclure `Dockerfile` lui-même si l'image est construite par `az acr build`.** Un `docker build` local lit le Dockerfile directement sur disque, en dehors du contexte envoyé au démon — l'exclure de `.dockerignore` ne change rien. `az acr build` fonctionne autrement : il empaquette le contexte local en tar en respectant `.dockerignore`, l'envoie au service de build distant, qui y cherche ensuite le fichier passé à `--file`. L'exclure fait échouer le build distant avec `ERROR: Unable to find 'Dockerfile'`, alors que le même Dockerfile compile sans problème en local — constaté sur `worker/`, seul service construit par le pipeline (`az acr build`, `vote`/`result` restant sur le registre d'Avisto). `.dockerignore` peut rester exclu sans risque : rien ne le lit côté service de build distant.
+
 ## Compose : `ports:` vs réseau interne
 
 - `ports:` sert uniquement à exposer un service vers la machine hôte (accès navigateur/Windows). Deux containers du même compose se joignent directement via le nom du service, sans jamais passer par `ports:`.
