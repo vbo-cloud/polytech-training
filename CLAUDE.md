@@ -77,7 +77,7 @@ Balayage minimum, à faire sur l'ensemble du repo :
 - la documentation qui l'énonce : `README.md`, `SUIVI.md`, `.claude/skills/`
 - ce que le changement rend faux ailleurs, même sans erreur visible
 
-Vérifier aussi **qui consomme réellement** l'objet modifié avant d'en conclure quoi que ce soit. Exemple vécu : `terraform/` et `k8s/` référencent une image externe figée du registre d'Avisto, pas celle construite ici — les « aligner » sur un changement local les aurait cassés au lieu de les corriger.
+Vérifier aussi **qui consomme réellement** l'objet modifié avant d'en conclure quoi que ce soit. Exemple vécu (Sprint 1, changement de port du front de vote) : `terraform/` et `k8s/` référençaient alors tous les deux une image externe figée du registre d'Avisto, pas celle construite ici — les « aligner » sur le changement local les aurait cassés au lieu de les corriger. Devenu partiellement obsolète depuis (Sprint 4) : `terraform/` tire désormais l'image du vote de l'ACR du projet comme le worker ; seul `k8s/` pointe encore le registre d'Avisto, ce dossier restant hors de la piste d'hébergement retenue (App Service, pas AKS — voir plus haut).
 
 Ensuite seulement, agir : **tous les correctifs nécessaires dans un seul commit**. Un correctif qui fait apparaître un nouveau problème à la passe de revue suivante signale que l'analyse n'a pas été faite.
 

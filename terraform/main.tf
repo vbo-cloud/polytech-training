@@ -359,6 +359,12 @@ resource "azurerm_linux_web_app" "vote" {
   # ressource séparée par application.
   virtual_network_subnet_id = azurerm_subnet.asp.id
 
+  # Sert à deux choses : tirer l'image de l'ACR sans identifiants, et porter le
+  # rôle `AcrPull` attribué plus bas — même modèle que le worker.
+  identity {
+    type = "SystemAssigned"
+  }
+
   site_config {
     # L'intégration VNET régionale route déjà les destinations RFC1918 par
     # défaut, mais pas les requêtes DNS de l'app. Sans ce réglage,
@@ -368,8 +374,13 @@ resource "azurerm_linux_web_app" "vote" {
     # `route_all` étend le routage à 0.0.0.0/0 et fait passer le DNS par le VNET.
     vnet_route_all_enabled = true
 
+    # Le pull passe par l'identité managée. Sans cette ligne, App Service
+    # cherche des identifiants de registre dans les app_settings et échoue —
+    # l'ACR a `admin_enabled = false`, il n'y en a aucun.
+    container_registry_use_managed_identity = true
+
     application_stack {
-      docker_registry_url = var.vote_registry_url
+      docker_registry_url = "https://${azurerm_container_registry.acr.login_server}"
       docker_image_name   = var.web_app_vote_docker_image_name
     }
   }
@@ -388,8 +399,22 @@ resource "azurerm_linux_web_app" "vote" {
     # Azure Managed Redis (architecture Redis Enterprise) n'utilise pas le
     # port 6380 de l'ancien Azure Cache for Redis, mais laisser le provider
     # exposer la valeur réelle évite de la re-deviner si Azure la fait évoluer.
-    "REDIS_CONNECTION_STRING"             = "rediss://:${urlencode(azurerm_managed_redis.redis.default_database[0].primary_access_key)}@${azurerm_managed_redis.redis.hostname}:${azurerm_managed_redis.redis.default_database[0].port}/0"
+    "REDIS_CONNECTION_STRING" = "rediss://:${urlencode(azurerm_managed_redis.redis.default_database[0].primary_access_key)}@${azurerm_managed_redis.redis.hostname}:${azurerm_managed_redis.redis.default_database[0].port}/0"
+
+    # `vote/Dockerfile` écoute sur 8000, pas 80 (utilisateur non-root, cf.
+    # docker-conventions SKILL.md). Tant que l'app tirait l'image préconstruite
+    # d'Avisto, son port réel était inconnu et ce réglage n'aurait rien
+    # garanti ; maintenant qu'elle tire l'image buildée depuis ce dépôt, sans
+    # cette ligne App Service sonderait 80 et renverrait 502.
+    "WEBSITES_PORT" = "8000"
+
     "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
+  }
+
+  # Le tag d'image appartient au pipeline, pas à Terraform — même raison que
+  # pour le worker : chaque run pousse `$(Build.BuildId)` et déploie ce tag.
+  lifecycle {
+    ignore_changes = [site_config[0].application_stack[0].docker_image_name]
   }
 
   tags = local.tags
@@ -491,6 +516,61 @@ resource "azurerm_linux_web_app" "worker" {
 }
 
 # ==============================================================================
+# Web app — result
+# ==============================================================================
+resource "azurerm_linux_web_app" "result" {
+  name                = "app-result-${local.base_name}-${random_string.suffix.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  service_plan_id     = azurerm_service_plan.voting_app.id
+
+  virtual_network_subnet_id = azurerm_subnet.asp.id
+
+  identity {
+    type = "SystemAssigned"
+  }
+
+  site_config {
+    # Résout `psql-....postgres.database.azure.com` par le VNET plutôt que par
+    # l'IP publique, fermée — même raison que pour le vote et le worker.
+    vnet_route_all_enabled = true
+
+    container_registry_use_managed_identity = true
+
+    # `result/server.js` sert un tableau de bord en temps réel par Socket.IO.
+    # Le provider laisse cet argument à `false` par défaut ; sans lui, App
+    # Service refuse l'upgrade WebSocket et Socket.IO retombe en silence sur
+    # le long polling — la page a l'air de marcher, mais plus en temps réel.
+    websockets_enabled = true
+
+    application_stack {
+      docker_registry_url = "https://${azurerm_container_registry.acr.login_server}"
+      docker_image_name   = var.web_app_result_docker_image_name
+    }
+  }
+
+  app_settings = {
+    # `result/server.js` construit son pool avec `pg.Pool({ connectionString })`,
+    # qui attend un URI `postgres://user:pass@host:port/db` — un format
+    # différent du worker (chaîne à clés `Host=...;Port=...`), la
+    # bibliothèque `pg` ne lisant pas ce dernier.
+    "POSTGRESQL_CONNECTION_STRING" = "postgres://${var.postgresql_administrator_login}:${urlencode(random_password.psql_admin.result)}@${azurerm_postgresql_flexible_server.psql.fqdn}:5432/${azurerm_postgresql_flexible_server_database.votes.name}?sslmode=require"
+
+    # `result/server.js` lit `process.env.PORT`, écoute 4000 par défaut si
+    # absent — mais sans ce réglage App Service sonderait 80 quand même.
+    "WEBSITES_PORT" = "4000"
+
+    "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
+  }
+
+  lifecycle {
+    ignore_changes = [site_config[0].application_stack[0].docker_image_name]
+  }
+
+  tags = local.tags
+}
+
+# ==============================================================================
 # ACR pull permissions
 # ==============================================================================
 # Écrire une attribution de rôle demande un droit que `Contributor` n'a pas.
@@ -502,4 +582,16 @@ resource "azurerm_role_assignment" "worker_acr_pull" {
   scope                = azurerm_container_registry.acr.id
   role_definition_name = "AcrPull"
   principal_id         = azurerm_linux_web_app.worker.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "vote_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_linux_web_app.vote.identity[0].principal_id
+}
+
+resource "azurerm_role_assignment" "result_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_linux_web_app.result.identity[0].principal_id
 }

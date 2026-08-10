@@ -23,8 +23,8 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 - [x] Multi-stage sur `worker/Dockerfile` (SDK pour compiler, `runtime:8.0` pour exécuter) — 1,29 Go → 291 Mo
 - [x] `.dockerignore` sur les trois services
 - [x] Les 3 services tournent en non-root (`USER`) — `vote` a dû quitter le port 80, réservé à root sous Linux, pour 8000
-  - `terraform/` et `k8s/` ne sont **pas** à réaligner : ils déploient l'image préconstruite d'Avisto (`rgy.k8s.devops-svc-ag.com/polytech/vote:1.0.1`), pas celle buildée ici. Les toucher casserait le déploiement.
-  - Dette conditionnelle : le jour où `web_app_vote_docker_image_name` pointera une image issue de ce repo, il faudra ajouter `WEBSITES_PORT = "8000"` aux `app_settings` du web app, sinon App Service sonde 80 et renvoie 502.
+  - À l'époque, `terraform/` et `k8s/` n'étaient **pas** à réaligner : ils déployaient l'image préconstruite d'Avisto (`rgy.k8s.devops-svc-ag.com/polytech/vote:1.0.1`), pas celle buildée ici. `k8s/` y pointe toujours ; `terraform/` en est sorti au Sprint 4 (voir plus bas).
+  - Dette conditionnelle acquittée au Sprint 4 : `WEBSITES_PORT = "8000"` posé sur `azurerm_linux_web_app.vote` dès que `web_app_vote_docker_image_name` a pointé une image issue de ce repo.
 - [x] Vérifier le flux complet en local : vote → valkey → worker → db → result — **stack complète fonctionnelle**
 
 ## Sprint 1.5 — Objectif week-end (avant mardi)
@@ -67,14 +67,16 @@ Vue d'ensemble des sprints. Contexte complet et décisions de scope dans `CLAUDE
 
 ## Sprint 4 — Infra Azure (Terraform)
 
-- [ ] Étendre `terraform/main.tf` : App Service pour `result`
+- [x] Étendre `terraform/main.tf` : App Service pour `result`
 - [x] Registre de conteneurs : `azurerm_container_registry` SKU Basic, `admin_enabled = false`. Seule ressource publique du projet avec le front de vote — Basic ne supporte pas les private endpoints, et l'agent Microsoft-hosted du pipeline est hors du VNET.
 - [x] App Service pour le `worker`, avec une identité managée titulaire du rôle `AcrPull` sur le registre.
   - **Le plan reste en B1, donc sans deployment slot.** Les tiers Free, Shared et Basic n'en supportent aucun : les slots imposaient de passer en Standard, ~5x le coût, pour une démo qui n'a pas vocation à être une prod. Décision #11 révisée en conséquence, et le stage `Promote` qui échangeait les slots a disparu. Le déploiement va directement sur l'application.
     - Contrepartie : le déploiement redémarre le conteneur, donc quelques secondes sans dépilement de la file. Les votes s'y accumulent et sont traités au redémarrage — rien n'est perdu, et le front de vote reste disponible. Remonter en Standard rétablirait le déploiement sans coupure ; c'est une ligne dans `service_plan_sku`, plus la ressource de slot et le stage de swap à réintroduire.
-  - Deux registres coexistent : le worker tire de l'ACR du projet, le vote reste sur celui d'Avisto. La demande initiale était de faire pointer `registry_url` sur l'ACR ; impossible sans y pousser aussi l'image du vote, que le pipeline ne construit pas. La variable est renommée `vote_registry_url` pour que l'intention soit lisible.
   - Le tag d'image du worker appartient au pipeline : `ignore_changes` sur `docker_image_name`, sans quoi le `terraform apply` suivant annulerait le dernier déploiement. Terraform ne pose que la valeur d'amorçage, et **le worker ne démarre pas tant que le pipeline n'a pas tourné une première fois**.
   - `azurerm_app_service_virtual_network_swift_connection` remplacée par l'argument `virtual_network_subnet_id` sur chaque app : le provider interdit de mélanger les deux, et l'argument porté par la ressource évite une ressource séparée par application.
+- [x] **`vote` et `result` basculés sur l'ACR du projet**, même modèle que le worker (identité managée, `AcrPull`, `ignore_changes` sur le tag). Le registre externe d'Avisto ne coexiste plus qu'avec `k8s/`, resté hors de la piste d'hébergement retenue (App Service, décision #7). `vote_registry_url` est supprimée : les trois variables d'image (`web_app_{worker,vote,result}_docker_image_name`) suivent maintenant le même schéma `repository:tag` dans l'ACR.
+  - `result/server.js` attend `POSTGRESQL_CONNECTION_STRING` en URI (`pg.Pool({ connectionString })`), pas la chaîne à clés du worker (`Npgsql`) — deux formats construits séparément dans `main.tf` à partir des mêmes ressources Postgres. Le mot de passe généré est passé par `urlencode` : `random_password.psql_admin` peut produire des caractères spéciaux d'URI (`#`, `%`, `&`...) même si Azure lui en interdit d'autres (`'`, `"`, `@`, `/`).
+  - `WEBSITES_PORT = "8000"` posé sur `vote` (`vote/Dockerfile` écoute 8000, pas 80) et `WEBSITES_PORT = "4000"` sur `result` (`result/server.js` lit `process.env.PORT`, défaut 4000) — sans quoi App Service sonde 80 sur les deux et renvoie 502.
 - [x] **State Terraform distant.** Imposé par le passage de l'`apply` dans le pipeline : un agent Azure DevOps est éphémère, un state local disparaît avec lui et le run suivant repartirait de zéro, donc recréerait tout.
   - Conteneur `tfstate` d'un compte `sttfstatepolydevfrc`, dans **`rg-tfstate-poly-dev-frc`** — un resource group distinct de celui que Terraform gère. Y loger le state le ferait s'effacer lui-même pendant un `terraform destroy` de teardown.
   - Amorçage fait à la main (`az group create`, `az storage account create`, `az storage container create`) : Terraform ne peut pas créer le stockage où il écrit son propre state. Versioning de blobs activé, pour pouvoir revenir sur un state écrasé.
