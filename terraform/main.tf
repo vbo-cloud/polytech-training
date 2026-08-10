@@ -83,28 +83,35 @@ resource "azurerm_subnet" "asp" {
 }
 
 # ==============================================================================
-# Redis cache (Basic)
+# Azure Managed Redis (Balanced B0)
 # ==============================================================================
+# `azurerm_redis_cache` (Azure Cache for Redis classique) refuse désormais
+# toute nouvelle création : le service est en cours de retrait au profit
+# d'Azure Managed Redis (architecture Redis Enterprise), constaté au premier
+# `apply` réel — https://aka.ms/AzureCacheForRedisRetirement. Palier le plus
+# bas de la gamme Balanced, ~13$/mois, comparable au Basic C0 remplacé.
+#
 # Pas de `prevent_destroy` ici : le Redis est une file de messages transitoire,
 # pas un stockage. Le protéger ferait échouer le `terraform destroy` complet —
 # un RG ne se détruit pas sans son contenu — alors que le teardown entre deux
 # sessions est le principal levier de coût. cf. SKILL.md, section lifecycle.
-resource "azurerm_redis_cache" "redis" {
+resource "azurerm_managed_redis" "redis" {
   name                = "redis-${local.base_name}-${random_string.suffix.result}"
   location            = azurerm_resource_group.rg.location
   resource_group_name = azurerm_resource_group.rg.name
 
-  capacity = 0
-  family   = "C"
-  sku_name = "Basic"
+  sku_name = "Balanced_B0"
 
-  minimum_tls_version = "1.2"
+  # Le provider laisse l'accès public ouvert par défaut : sans cette ligne, le
+  # cache reste joignable depuis Internet sur 10000 avec la seule clé d'accès,
+  # et le private endpoint ci-dessous ne sert à rien. Le seul consommateur est
+  # la Web App, qui l'atteint par l'intégration VNET.
+  public_network_access = "Disabled"
 
-  # Le provider laisse l'accès public à `true` par défaut : sans cette ligne, le
-  # cache reste joignable depuis Internet sur 6380 avec la seule clé d'accès, et
-  # le private endpoint ci-dessous ne sert à rien. Le seul consommateur est la
-  # Web App, qui l'atteint par l'intégration VNET.
-  public_network_access_enabled = false
+  # Bloc obligatoire à la création, même vide : la base par défaut du cache.
+  # `geo_replication_group_name` ne s'applique qu'à partir de Balanced_B3,
+  # sans objet ici.
+  default_database {}
 
   tags = local.tags
 }
@@ -120,9 +127,12 @@ resource "azurerm_private_endpoint" "redis_pe" {
 
   private_service_connection {
     name                           = "redis-privatelink"
-    private_connection_resource_id = azurerm_redis_cache.redis.id
-    subresource_names              = ["redisCache"]
-    is_manual_connection           = false
+    private_connection_resource_id = azurerm_managed_redis.redis.id
+    # "redisEnterprise", pas "redisCache" : Azure Managed Redis reste exposé
+    # sous le type ARM `Microsoft.Cache/redisEnterprise`, même si la ressource
+    # Terraform s'appelle `azurerm_managed_redis`.
+    subresource_names    = ["redisEnterprise"]
+    is_manual_connection = false
   }
 
   # C'est Azure qui crée et maintient l'enregistrement A dans la zone, pas
@@ -140,9 +150,11 @@ resource "azurerm_private_endpoint" "redis_pe" {
 
 # Nom imposé par Azure : la zone privatelink d'un service Redis doit porter
 # exactement ce nom, sinon la résolution privée ne fonctionne pas. Hors pattern
-# de nommage projet, volontairement.
+# de nommage projet, volontairement. `privatelink.redis.azure.net` pour Azure
+# Managed Redis — différent de `privatelink.redis.cache.windows.net` utilisé
+# par l'ancien Azure Cache for Redis (classique).
 resource "azurerm_private_dns_zone" "redis_dns" {
-  name                = "privatelink.redis.cache.windows.net"
+  name                = "privatelink.redis.azure.net"
   resource_group_name = azurerm_resource_group.rg.name
 
   tags = local.tags
@@ -231,8 +243,13 @@ resource "azurerm_postgresql_flexible_server" "psql" {
   administrator_login    = var.postgresql_administrator_login
   administrator_password = random_password.psql_admin.result
 
-  # Le mode privé est activé par la seule présence de ces deux arguments : le
-  # provider refuse de les combiner avec `public_network_access_enabled = true`.
+  # `public_network_access_enabled` ne vaut pas `false` par défaut : laissé
+  # absent, l'API le résout à une valeur qui entre en conflit avec
+  # `delegated_subnet_id`/`private_dns_zone_id` ci-dessous
+  # (ConflictingPublicNetworkAccessAndVirtualNetworkConfiguration au premier
+  # `apply` réel) — explicite, pas déduit par le provider.
+  public_network_access_enabled = false
+
   delegated_subnet_id = azurerm_subnet.psql.id
   private_dns_zone_id = azurerm_private_dns_zone.psql_dns.id
 
@@ -331,7 +348,7 @@ resource "azurerm_linux_web_app" "vote" {
   site_config {
     # L'intégration VNET régionale route déjà les destinations RFC1918 par
     # défaut, mais pas les requêtes DNS de l'app. Sans ce réglage,
-    # `redis-....redis.cache.windows.net` se résoudrait hors du VNET, donc vers
+    # `redis-....redis.azure.net` se résoudrait hors du VNET, donc vers
     # l'IP publique du cache — désormais fermée — au lieu de la zone
     # privatelink. Le vote casserait au runtime avec un `plan` propre.
     # `route_all` étend le routage à 0.0.0.0/0 et fait passer le DNS par le VNET.
@@ -352,7 +369,12 @@ resource "azurerm_linux_web_app" "vote" {
     # encodée, elle termine le `netloc` de l'URL au premier `/`, et
     # `redis.from_url()` se connecte à un hôte tronqué. Le tirage se fait à
     # chaque création du cache — l'infra marcherait ou non selon le run.
-    "REDIS_CONNECTION_STRING"             = "rediss://:${urlencode(azurerm_redis_cache.redis.primary_access_key)}@${azurerm_redis_cache.redis.hostname}:6380/0"
+    #
+    # Le port est lu sur `default_database[0].port` plutôt que figé en dur :
+    # Azure Managed Redis (architecture Redis Enterprise) n'utilise pas le
+    # port 6380 de l'ancien Azure Cache for Redis, mais laisser le provider
+    # exposer la valeur réelle évite de la re-deviner si Azure la fait évoluer.
+    "REDIS_CONNECTION_STRING"             = "rediss://:${urlencode(azurerm_managed_redis.redis.default_database[0].primary_access_key)}@${azurerm_managed_redis.redis.hostname}:${azurerm_managed_redis.redis.default_database[0].port}/0"
     "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
   }
 
@@ -375,8 +397,9 @@ locals {
     # Pas d'encodage nécessaire ici, à l'inverse de l'URL du vote : ce format
     # n'est pas une URL, la clé y est une valeur de champ.
     # `abortConnect=False` laisse le multiplexeur retenter au lieu d'échouer
-    # définitivement si le cache n'est pas encore prêt au démarrage.
-    "REDIS_CONNECTION_STRING" = "${azurerm_redis_cache.redis.hostname}:6380,password=${azurerm_redis_cache.redis.primary_access_key},ssl=True,abortConnect=False"
+    # définitivement si le cache n'est pas encore prêt au démarrage. Port lu
+    # sur `default_database[0].port`, comme pour le vote — voir plus haut.
+    "REDIS_CONNECTION_STRING" = "${azurerm_managed_redis.redis.hostname}:${azurerm_managed_redis.redis.default_database[0].port},password=${azurerm_managed_redis.redis.default_database[0].primary_access_key},ssl=True,abortConnect=False"
 
     "POSTGRESQL_CONNECTION_STRING" = join(";", [
       "Host=${azurerm_postgresql_flexible_server.psql.fqdn}",

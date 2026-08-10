@@ -19,7 +19,7 @@ Fork de [`AvistoTelecom/polytech-training`](https://github.com/AvistoTelecom/pol
 - Postgres — stocke les résultats
 - `result/` — app Node.js : affiche les résultats en temps réel (WebSocket)
 
-Dossiers additionnels présents dans le repo : `k8s/`, `terraform/`. Le `terraform/main.tf` existant cible déjà **Azure App Service** (pas Kubernetes), avec un Azure Cache for Redis — c'est la piste d'hébergement retenue malgré la présence du dossier `k8s/`.
+Dossiers additionnels présents dans le repo : `k8s/`, `terraform/`. Le `terraform/main.tf` existant cible déjà **Azure App Service** (pas Kubernetes), avec un Azure Managed Redis — c'est la piste d'hébergement retenue malgré la présence du dossier `k8s/`.
 
 **Règles du jeu :**
 
@@ -32,7 +32,7 @@ Dossiers additionnels présents dans le repo : `k8s/`, `terraform/`. Le `terrafo
 | # | Sujet | Décision |
 |---|---|---|
 | 1 | Fonctionnel | Vote simple (1 question, 2 options) en v1. Historique/auth en stretch goal seulement. |
-| 2 | File de messages | Valkey en local, **Azure Cache for Redis** en cloud (pas Service Bus). |
+| 2 | File de messages | Valkey en local, **Azure Managed Redis** en cloud (pas Service Bus). |
 | 3 | Front vote / result | Gardés tels quels (Python / Node.js) — aucune valeur DevOps à les réécrire en C#. |
 | 4 | Nouvelle brique C# | Une API ASP.NET Core "Polls" (CRUD sondages, EF Core, Swagger) — priorité P2/stretch. |
 | 5 | Worker .NET | Amélioré (EF Core, retries Polly, logs structurés), pas réécrit. |
@@ -174,7 +174,7 @@ Une fois la PR ouverte, la vérifier régulièrement (`gh pr checks` ou l'interf
 **Data & messaging**
 
 - PostgreSQL — stockage des résultats
-- Valkey (local) / Azure Cache for Redis (cloud) — file d'attente des votes
+- Valkey (local) / Azure Managed Redis (cloud) — file d'attente des votes
 
 **Conteneurisation**
 
@@ -187,7 +187,7 @@ Une fois la PR ouverte, la vérifier régulièrement (`gh pr checks` ou l'interf
 **Cloud (Azure)**
 
 - Azure App Service (Linux, conteneurs)
-- Azure Cache for Redis
+- Azure Managed Redis
 - Application Insights
 
 **CI/CD**
