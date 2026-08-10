@@ -2,5 +2,4 @@ bin
 obj
 .git
 .gitignore
-Dockerfile
 .dockerignore

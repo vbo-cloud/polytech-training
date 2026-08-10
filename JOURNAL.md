@@ -340,3 +340,22 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 **Décisions techniques** :
 
 - **`ignore_changes = [zone]` plutôt qu'un correctif de fond, parce qu'il n'y en a pas côté projet.** C'est un bug connu et toujours ouvert du provider `azurerm` ([hashicorp/terraform-provider-azurerm#25538](https://github.com/hashicorp/terraform-provider-azurerm/issues/25538)) : il recalcule parfois une valeur de `zone` différente de celle qu'Azure a réellement assignée dès qu'un autre changement force un `plan` sur le serveur, et Azure refuse ce changement sans zone de standby à échanger — que ce projet n'a pas, faute de `high_availability`. `ignore_changes` est la mitigation standard en attendant un correctif amont. La dette tracée dans `SUIVI.md` porte la condition de retrait explicite : correctif provider, ou réexamen si `high_availability` est introduit un jour — `ignore_changes` masquerait alors aussi un changement de zone réellement voulu.
+
+---
+
+## #14 — fix/worker-dockerignore-excludes-dockerfile
+
+**Contexte avant** : `fix/psql-zone-drift` (entrée #13) venait d'être mergée dans `dev`. Le merge a déclenché un run réel du pipeline, qui a échoué au stage `Publish` sur `az acr build --file Dockerfile worker/` avec « ERROR: Unable to find 'Dockerfile'. » — `worker/.dockerignore` excluait la ligne `Dockerfile` de son propre contenu depuis l'entrée #1, sans jamais avoir posé problème jusqu'ici : un `docker build`/`docker compose build` local lit le Dockerfile directement sur disque, hors du contexte de build qu'il empaquette.
+
+**Objectif** : faire à nouveau passer un run réel du pipeline au stage `Publish`, en corrigeant `worker/.dockerignore` sans casser ce qui marche déjà en local.
+
+**Ce qui a été fait** :
+
+- Suppression de la ligne `Dockerfile` dans `worker/.dockerignore` (la ligne `.dockerignore` elle-même reste exclue, sans risque, rien ne la lit côté build distant).
+- `vote/.dockerignore` et `result/.dockerignore` non touchés : ni l'un ni l'autre n'est construit par ce pipeline (ils restent sur le registre d'Avisto, décision de scope #3), donc la même exclusion y reste inoffensive pour l'instant.
+- `.claude/skills/docker-conventions/SKILL.md` mis à jour (section `.dockerignore`) pour documenter ce piège.
+- Passe `reviewer` : aucun retour.
+
+**Décisions techniques** :
+
+- **`az acr build` échoue là où `docker build` ne voyait rien.** `az acr build` empaquette le contexte local en tar en respectant `.dockerignore`, puis l'envoie à un service de build distant qui cherche ensuite dedans le fichier passé à `--file` — le Dockerfile doit donc faire partie de l'archive envoyée. `docker build`/`docker compose build` local, eux, lisent le Dockerfile directement sur le disque local, indépendamment de ce que `.dockerignore` exclut du contexte. La même ligne était inoffensive dans un cas et fatale dans l'autre, ce qui explique pourquoi le défaut a survécu sans incident depuis l'entrée #1 jusqu'au premier run réel du pipeline.
