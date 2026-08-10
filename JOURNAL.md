@@ -359,3 +359,5 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 **Décisions techniques** :
 
 - **`az acr build` échoue là où `docker build` ne voyait rien.** `az acr build` empaquette le contexte local en tar en respectant `.dockerignore`, puis l'envoie à un service de build distant qui cherche ensuite dedans le fichier passé à `--file` — le Dockerfile doit donc faire partie de l'archive envoyée. `docker build`/`docker compose build` local, eux, lisent le Dockerfile directement sur le disque local, indépendamment de ce que `.dockerignore` exclut du contexte. La même ligne était inoffensive dans un cas et fatale dans l'autre, ce qui explique pourquoi le défaut a survécu sans incident depuis l'entrée #1 jusqu'au premier run réel du pipeline.
+
+**Correction ultérieure** : ce mécanisme s'est révélé faux — voir entrée #15. `az acr build` ré-ajoute toujours le Dockerfile au tar envoyé, peu importe `.dockerignore` ; ce commit était un no-op inoffensif, pas le vrai correctif. L'erreur a persisté à l'identique après ce merge ; la vraie cause portait sur `--file`.

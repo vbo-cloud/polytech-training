@@ -314,9 +314,11 @@ stages:
           #
           # Pas de `--file` : sa valeur par défaut ('Dockerfile') est jointe par
           # la CLI au contexte passé en dernier argument (`worker/Dockerfile`).
-          # Un `--file` explicite suit une règle différente et non documentée
-          # dans `az acr build --help` — la CLI le résout relatif à son propre
-          # répertoire de travail, pas au contexte. Constaté sur un run réel :
+          # Un `--file` explicite suit une règle différente, contrairement à ce
+          # que suggère l'aide de la commande (« relative path... to the source
+          # code root folder », qui laisse croire qu'il est toujours relatif au
+          # contexte) — la CLI le résout en réalité relatif à son propre
+          # répertoire de travail. Constaté sur un run réel :
           # `--file Dockerfile` avec le contexte `worker/` cherchait
           # `./Dockerfile` à la racine du dépôt (répertoire de travail par
           # défaut de la tâche `AzureCLI@2`, aucun `workingDirectory` déclaré
