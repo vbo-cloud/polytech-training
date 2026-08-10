@@ -257,3 +257,27 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 - **Protection de branche appliquée par API plutôt que documentée comme consigne.** Le hook `pre-merge-commit` reposait sur une discipline de workflow que Claude Code pouvait respecter, mais que rien n'empêchait de contourner par un `git push` direct hors de ses outils — c'est précisément ce qui venait de se produire : un commit avait atterri directement sur `dev` par erreur pendant ce travail, repéré et déplacé sur cette branche avant tout push. La règle "aucun commit direct sur `dev`/`main`" ne devient un vrai filet que si GitHub lui-même la fait respecter — d'où `enforce_admins`, qui s'applique même à Vincent en tant qu'administrateur du repo.
 - **Squash et rebase merge désactivés au niveau du repo, pas seulement évités en pratique.** L'historique Git propre, commit par commit en Conventional Commits, est un artefact de démonstration explicite du projet (voir `CLAUDE.md`, « distinguer fork initial → phase de compréhension → mes ajouts ») — des entrées de ce journal s'appuient sur la survie de commits individuels après merge (entrée #4 : « le commit qui les trace est donc remonté en tête de branche » ; entrée #5 : « le pin `required_version` est commité avant les validations qui en dépendent »). Un squash merge aurait aplati chaque branche en un seul commit et effacé cette granularité.
 - **Le hook `.githooks/pre-merge-commit` reste en place plutôt que d'être supprimé.** Il n'a plus de chemin d'exécution réel — la protection GitHub bloque tout push direct avant qu'un `git merge` local n'ait la moindre chance de s'exécuter contre `dev` — mais le supprimer effacerait la trace de la démarche (hook local → protection GitHub) sans bénéfice, pour un fichier qui ne coûte rien à laisser en vestige documenté.
+
+---
+
+## #10 — feature/managed-redis-migration
+
+**Contexte avant** : `terraform/` déclarait le cache de vote via `azurerm_redis_cache` (Azure Cache for Redis classique) depuis l'alignement de l'entrée #5, jamais encore déployé réellement — les `plan` précédents étaient restés propres. Le premier `terraform apply` réel de ce week-end a révélé que ce service n'accepte plus aucune nouvelle création, Microsoft étant en train de le retirer.
+
+**Objectif** : faire à nouveau passer un `terraform apply` réel en migrant le cache vers le service de remplacement, sans rien casser d'autre dans l'infra déjà posée.
+
+**Ce qui a été fait** :
+
+- Remplacement d'`azurerm_redis_cache` par `azurerm_managed_redis` (architecture Redis Enterprise), palier `Balanced_B0`.
+- `public_network_access = "Disabled"` (string) à la place de `public_network_access_enabled` (bool), propre au nouveau type de ressource.
+- Port de connexion lu dynamiquement via `default_database[0].port` plutôt qu'un port fixe.
+- Zone privatelink basculée sur `privatelink.redis.azure.net` (remplace `.cache.windows.net`), `subresource_names = ["redisEnterprise"]` sur le private endpoint.
+- Correctif Postgres au passage : `public_network_access_enabled = false` posé explicitement, pour lever un conflit réseau révélé par le même `apply`.
+- `.claude/skills/terraform-conventions/SKILL.md` corrigé après une première passe `reviewer` : nom de zone privatelink généralisé au lieu d'être en dur, `public_network_access_enabled` recadré comme spécifique à l'ancien `azurerm_redis_cache`, `minimum_tls_version` retiré de la doc Redis générale — il n'existe pas sur `azurerm_managed_redis`, qui impose TLS 1.2+ par défaut.
+- `CLAUDE.md` corrigé après une deuxième passe `reviewer` : 4 mentions obsolètes de « Azure Cache for Redis » réalignées (table de décisions de scope, stack technique, section Cloud).
+- `subresource_names = ["redisEnterprise"]` vérifié contre la documentation Microsoft suite à un point de contrôle de la même passe — confirmé exact, aucun changement de code nécessaire.
+
+**Décisions techniques** :
+
+- **Migration forcée, pas un choix d'architecture.** `azurerm_redis_cache` restait le service documenté par la fiche de conventions et par `CLAUDE.md` jusqu'à ce commit ; le changement vient d'un blocage constaté au premier `apply` réel, pas d'une réévaluation anticipée. D'où le préfixe `fix:` sur le commit principal plutôt que `feat:`.
+- **`Balanced_B0` retenu sans comparatif détaillé des paliers.** Le seul objectif de cette branche est de retrouver un `apply` qui passe pendant le week-end contraint (décision #12 de `CLAUDE.md`) ; le dimensionnement fin du palier reste à revoir une fois l'infra stabilisée.
