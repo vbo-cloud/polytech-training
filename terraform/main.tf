@@ -419,6 +419,11 @@ resource "azurerm_linux_web_app" "vote" {
     # l'ACR a `admin_enabled = false`, il n'y en a aucun.
     container_registry_use_managed_identity = true
 
+    # Obligatoire avec une identité `UserAssigned` : `use_managed_identity`
+    # seul ne dit pas *laquelle* utiliser, et App Service retomberait sur une
+    # identité système que ces apps n'ont plus.
+    container_registry_managed_identity_client_id = azurerm_user_assigned_identity.acr_pull.client_id
+
     application_stack {
       docker_registry_url = "https://${azurerm_container_registry.acr.login_server}"
       docker_image_name   = var.web_app_vote_docker_image_name
@@ -523,6 +528,10 @@ resource "azurerm_linux_web_app" "worker" {
     # l'ACR a `admin_enabled = false`, il n'y en a aucun.
     container_registry_use_managed_identity = true
 
+    # Obligatoire avec une identité `UserAssigned` — voir le commentaire sur
+    # le vote.
+    container_registry_managed_identity_client_id = azurerm_user_assigned_identity.acr_pull.client_id
+
     # Slash final volontaire : le worker enregistre le préfixe
     # `http://*:8080/healthz/`. HttpListener sous Windows accepte la requête
     # sans slash, l'implémentation managée utilisée sous Linux — celle du
@@ -580,6 +589,10 @@ resource "azurerm_linux_web_app" "result" {
     vnet_route_all_enabled = true
 
     container_registry_use_managed_identity = true
+
+    # Obligatoire avec une identité `UserAssigned` — voir le commentaire sur
+    # le vote.
+    container_registry_managed_identity_client_id = azurerm_user_assigned_identity.acr_pull.client_id
 
     # `result/server.js` sert un tableau de bord en temps réel par Socket.IO.
     # Le provider laisse cet argument à `false` par défaut ; sans lui, App
