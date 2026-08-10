@@ -269,6 +269,18 @@ resource "azurerm_postgresql_flexible_server" "psql" {
   # resource group — qui est le principal levier de coût du projet. La fiche est
   # mise à jour dans le même commit.
   tags = local.tags
+
+  lifecycle {
+    # `zone` n'est jamais posé ici, mais un bug connu du provider (issue
+    # hashicorp/terraform-provider-azurerm#25538, toujours ouverte) le fait
+    # parfois recalculer une valeur différente de celle qu'Azure a réellement
+    # assignée, dès qu'un autre changement force un `plan` sur ce serveur.
+    # Azure refuse ce changement sans `high_availability.standby_availability_zone`
+    # à échanger — qu'on n'a pas, ce projet n'a pas de haute dispo. Constaté
+    # sur un `apply` réel : `azurerm_subnet.psql` modifié dans le même run a
+    # suffi à déclencher un diff sur `zone` qui a fait échouer tout l'apply.
+    ignore_changes = [zone]
+  }
 }
 
 # Base applicative dédiée plutôt que la base de maintenance `postgres` utilisée
