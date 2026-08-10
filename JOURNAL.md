@@ -286,17 +286,20 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 
 ## #11 — feature/pipeline-install-terraform
 
-**Contexte avant** : `feature/azure-pipeline-ci` (entrée #8) venait d'être mergée dans `dev`, mais n'avait pas encore tourné en conditions réelles — la configuration manuelle côté portail Azure DevOps restait à faire. Le premier run réel a échoué au stage `Infra`, avec `terraform: command not found` : le commentaire du YAML affirmait à tort que Terraform était préinstallé sur l'image `ubuntu-latest`.
+**Contexte avant** : `feature/azure-pipeline-ci` (entrée #8) venait d'être mergée dans `dev`, mais n'avait pas encore tourné en conditions réelles — la configuration manuelle côté portail Azure DevOps restait à faire. Le premier run réel a échoué au stage `Infra`, avec `terraform: command not found` : le commentaire du YAML affirmait à tort que Terraform était préinstallé sur l'image `ubuntu-latest`. Terraform installé, un second run réel a échoué plus loin, au `terraform apply` contre `dev` : le provider azurerm (`~> 4.0`, résolu en 4.81.0) a rejeté `azurerm_linux_web_app.worker` avec l'erreur « `site_config.0.health_check_eviction_time_in_min`,`site_config.0.health_check_path` must be specified » — `health_check_path` était déjà posé, mais l'argument qui doit l'accompagner ne l'était pas.
 
-**Objectif** : corriger le stage `Infra` pour qu'il installe Terraform lui-même, sans dépendre d'une hypothèse fausse sur l'agent.
+**Objectif** : faire tourner le pipeline Azure DevOps de bout en bout contre `dev`, en corrigeant chaque blocage réel rencontré au fil des runs — d'abord l'installation de Terraform, puis la configuration de health check du worker rejetée par le provider.
 
 **Ce qui a été fait** :
 
 - Étape `Install Terraform` ajoutée en tête du job `Terraform`, avant les tâches qui invoquent le binaire : téléchargement du zip officiel HashiCorp (version 1.9.8) depuis `releases.hashicorp.com`, extraction dans `/usr/local/bin`, vérification par `terraform -version`.
 - Commentaire du YAML corrigé : il affirmait l'inverse de ce que le premier run a montré.
+- `health_check_eviction_time_in_min = 2` ajouté sur `azurerm_linux_web_app.worker`, aux côtés de `health_check_path` déjà présent, pour satisfaire l'exigence du provider.
+- Étape `Install Terraform` corrigée suite à un retour `reviewer` sur le premier commit : `- script:` implicite remplacé par `- bash:` explicite, pour rester cohérent avec le style du reste du pipeline.
 
 **Décisions techniques** :
 
 - **Installation par téléchargement direct du binaire, pas par extension de la marketplace Azure DevOps.** L'organisation n'en a aucune installée, et en ajouter une est une action manuelle côté portail — hors de portée d'un fichier YAML.
 - **Version figée à 1.9.8, dans la plage `~> 1.9` que `providers.tf` exige déjà.** Le `required_version` continue de faire échouer le stage si un futur changement de version dérive hors plage, plutôt que de laisser passer un binaire inattendu.
 - **Installé dans `/usr/local/bin`, déjà dans le `PATH` par défaut de l'image.** Aucune manipulation de `PATH` nécessaire pour que les tâches `AzureCLI@2` suivantes, dans le même job, trouvent le binaire.
+- **`health_check_eviction_time_in_min` posé à 2, le minimum de la plage acceptée (2-10), pas une valeur métier réfléchie.** Cet argument sert normalement à retirer une instance défaillante de la rotation après N minutes d'échecs répétés sur un App Service Plan à plusieurs instances ; ce projet tourne sur une instance unique (B1, pas de slots — décision #11 de `CLAUDE.md`), donc la valeur n'a aucun effet réel. Elle n'existe que parce que le provider la rend obligatoire dès que `health_check_path` est posé. Poser le minimum documente que c'est un artefact de compatibilité de schéma, pas un réglage à ajuster plus tard.
