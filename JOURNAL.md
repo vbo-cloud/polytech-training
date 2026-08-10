@@ -383,3 +383,27 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 **Décisions techniques** :
 
 - **Le vrai correctif n'a été trouvé qu'en lisant le code source réel de l'outil en cause, après qu'un diagnostic plausible et une revue `reviewer` propre se soient révélés faux.** L'entrée #14 avait un raisonnement cohérent (`.dockerignore` exclut `Dockerfile`, le tar envoyé au service de build distant ne l'aurait pas contenu) et une passe `reviewer` sans retour — rien dans ce processus ne pouvait détecter l'erreur, parce que rien n'avait vérifié le correctif contre un run réel du pipeline avant de conclure. Un diagnostic plausible et une revue de code cohérente ne prouvent pas la cause réelle : seul le rejeu du run qui a produit l'erreur originale le fait. Ici, le rejeu (déclenché par le merge de l'entrée #14) a produit l'erreur identique, signal sans ambiguïté que le correctif précédent était un no-op — ce qui a mené à lire directement le code source d'`az acr build` plutôt qu'à formuler une nouvelle hypothèse par déduction.
+
+---
+
+## #16 — feature/vote-result-acr
+
+**Contexte avant** : seul le worker suivait le pattern « image sur l'ACR du projet + identité managée + rôle `AcrPull` » (entrée #7). Le front `vote` (Python) pointait encore sur le registre public d'Avisto — dette explicitement actée depuis l'entrée #2, jamais levée. Le front `result` (Node.js) n'avait aucune ressource App Service Azure du tout : il n'existait que localement, via `compose.yaml`.
+
+**Objectif** : aligner `vote` et `result` sur le pattern déjà validé pour le worker — image tirée de l'ACR du projet, déployée sur App Service — pour que les trois services applicatifs suivent le même schéma d'infra et de déploiement.
+
+**Ce qui a été fait** :
+
+- `vote` bascule son `docker_registry_url` sur l'ACR du projet et gagne `WEBSITES_PORT=8000`, identité managée System-Assigned et rôle `AcrPull`, comme le worker.
+- Nouvelle ressource `azurerm_linux_web_app.result` : `POSTGRESQL_CONNECTION_STRING` construite en URI (`postgres://user:pass@host:port/db`, mot de passe passé par `urlencode`), `WEBSITES_PORT=4000`, `websockets_enabled = true`.
+- Variable `vote_registry_url` supprimée : les trois apps (`worker`, `vote`, `result`) partagent désormais le même schéma de variable d'image (`repository:tag` dans l'ACR).
+- `azure-pipelines.yml` étendu : `vote/*` et `result/*` ajoutés aux filtres de path (trigger et pr), deux nouveaux jobs de build/push dans le stage Publish (`PublishVoteImage`, `PublishResultImage` — le job worker renommé `PublishWorkerImage` pour la symétrie), deux nouveaux `deployment:` dans le stage Deploy (`DeployVote`, `DeployResult`), sorties Terraform correspondantes (`vote_web_app_name`, `result_web_app_name`, `result_url`) branchées en variables de pipeline.
+- Doc corrigée dans le même commit pour refléter le nouvel état : `CLAUDE.md` (l'exemple d'analyse d'impact qui citait `terraform/` comme pointant encore Avisto), `SUIVI.md` (Sprint 1 et Sprint 4), `docker-conventions/SKILL.md` (le couplage port/registre, désormais réel côté Terraform).
+- Passe `reviewer` : trois avertissements corrigés dans un second commit — une phrase de `SUIVI.md` qui ne citait `vote` que comme seule ressource publique du projet sur l'ACR (oubliait `result`, désormais public aussi), la description de la variable `service_plan_sku` qui ne listait que `vote` et `worker` comme locataires du plan App Service partagé (oubliait `result`), un exemple obsolète dans `terraform-conventions/SKILL.md` citant « URL de registre public » comme valeur non sensible de `terraform.tfvars`, alors que `vote_registry_url` vient d'être supprimée.
+- Dette ajoutée dans `SUIVI.md` : le plan App Service `B1` partagé n'a été dimensionné à l'origine que pour 2 apps (`vote` + `worker`), il en héberge maintenant 3, dont `result` avec des connexions WebSocket persistantes — à surveiller, pas un problème connu sur le trafic de démo actuel.
+
+**Décisions techniques** :
+
+- **`result` en URI de connexion (`postgres://...`), pas en chaîne à clés comme le worker.** `worker` (.NET, Npgsql) et `result/server.js` (Node, `pg.Pool`) attendent des formats différents pour la même base Postgres — le choix suit la bibliothèque cliente de chaque service, pas une préférence arbitraire. Le mot de passe est passé par `urlencode` pour éviter le même bug que celui corrigé en entrée #7 sur la clé Redis (un caractère spécial cassant le `netloc` de l'URI).
+- **`websockets_enabled = true` posé explicitement sur `result`.** Sans ce réglage, App Service ne casse rien de visible immédiatement : Socket.IO dégraderait silencieusement en long polling, un comportement fonctionnel mais dégradé, difficile à repérer sans le savoir déjà.
+- **Deux points signalés comme bloquants par `reviewer` (`vote/.dockerignore` et `result/.dockerignore` excluant `Dockerfile`, qui casserait `az acr build` selon lui) ont été rejetés, pas corrigés.** Ce diagnostic reprend exactement une théorie déjà testée et invalidée sur ce projet (entrées #14 et #15) : `az acr build` réintègre toujours le Dockerfile au tar envoyé au service de build distant, indépendamment de `.dockerignore` — vérifié en relisant `_pack_source_code` dans le code source d'`azure-cli`. Le vrai bug de l'époque portait sur un `--file` explicite non joint au contexte, déjà corrigé en entrée #15 et absent des trois appels `az acr build` de ce pipeline. Aucun `.dockerignore` n'a donc été modifié — exemple de retour de revue vérifié à la source puis écarté, plutôt qu'appliqué par réflexe.
