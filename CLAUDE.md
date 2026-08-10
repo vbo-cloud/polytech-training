@@ -92,22 +92,32 @@ Ce que l'analyse ne couvre pas doit être écrit — dans `SUIVI.md` en dette, o
 
 ### Branch rules
 
-**Simplifié pour ce projet (week-end avant l'entretien) : pas de PR, merge direct sur `dev` en local. `main` n'est pas touchée pour l'instant** — pas de release, pas de hotfix, pas de tag tant que ce n'est pas explicitement redécidé.
+**Révisé le 2026-08-09 : PR GitHub entre `feature/*` et `dev`, mergée via le bouton GitHub.** Nécessaire pour que le pipeline Azure DevOps fonctionne comme conçu (`azure-pipelines.yml`, décision #11) : une PR affiche le `terraform plan` en preview, rejoué à chaque push tant qu'elle reste ouverte ; le merge déclenche l'`apply`. Un merge local (`git merge`) ne passe jamais par GitHub, donc ne déclenche jamais le pipeline — la version précédente de cette règle («pas de PR, merge direct en local») avait été simplifiée pour la vitesse du week-end, sans tenir compte du fait que le pipeline, lui, avait été conçu autour d'une PR dès son premier commit. `main` n'est pas touchée pour l'instant — pas de release, pas de hotfix, pas de tag tant que ce n'est pas explicitement redécidé.
 
+- **Aucun commit direct sur `dev` ou `main`, sans exception — y compris pour un correctif d'une ligne ou un changement de doc.** Toute modification, quelle que soit sa taille, passe par `feature/*` → push → PR → merge GitHub. Une branche à un seul commit reste une branche.
 - Ne jamais pousser directement sur `main` (elle reste au repos)
-- `feature/*` se crée depuis `dev`, se merge directement dans `dev` en local (pas de PR GitHub)
-- Historique toujours propre avant de merger (rebase interactif, commits Conventional Commits) — cette exigence ne change pas, seul le mécanisme de validation (PR) disparaît
+- `feature/*` se crée depuis `dev`, se pousse sur GitHub, se merge dans `dev` via une Pull Request
+- Merge strategy : **"Create a merge commit"** — seule option activée côté GitHub (`allow_squash_merge`/`allow_rebase_merge` désactivés au niveau du repo), pas seulement une consigne. L'historique doit déjà être propre avant la PR (rebase interactif, Conventional Commits) : la PR expose ce qui est prêt, elle ne le nettoie pas à la place de Claude Code
+- Historique toujours propre **avant de pousser la branche** : cette exigence ne change pas, seul le moment où l'historique devient visible/mergeable change
+- `dev` et `main` sont protégées côté GitHub (branch protection rules) : push direct refusé par GitHub lui-même, pas seulement par discipline — voir section Hook Git
 
 ### Workflow
 
 - New feature : `git checkout -b feature/xxx dev`
-- Merge dans dev : `git checkout dev && git merge --no-ff feature/xxx` (en local, une fois la branche prête — `--no-ff` est nécessaire pour que le hook `pre-merge-commit` se déclenche, sinon un fast-forward le contourne silencieusement)
+- `reviewer` puis `docwriter` tournent en local sur la branche, comme avant — `JOURNAL.md` est commité sur `feature/xxx` avant tout push
+- Ouvrir la PR : `git push -u origin feature/xxx`, puis `gh pr create --base dev` (ou l'interface GitHub) — déclenche le `plan` Terraform en preview sur la PR
+- Merge : bouton GitHub ("Create a merge commit"), jamais `git merge` en local pour cette étape — c'est ce merge, poussé par GitHub sur `dev`, qui déclenche l'`apply`
+- Après merge : `git fetch origin && git checkout dev && git merge --ff-only origin/dev` en local, pour resynchroniser avant la branche suivante
 
 ### Hook Git
 
-`.githooks/pre-merge-commit` bloque le merge dans `dev` si `JOURNAL.md` n'a pas été mis à jour sur la branche (vérification mécanique du passage de `docwriter`). Il ne peut pas vérifier que `reviewer` a réellement approuvé le diff — ça reste une discipline de workflow pour Claude Code, pas quelque chose qu'un script shell peut juger.
+`.githooks/pre-merge-commit` bloque un `git merge --no-ff` **local** dans `dev` si `JOURNAL.md` n'a pas été mis à jour sur la branche entrante (vérification mécanique du passage de `docwriter`). **Il ne peut plus se déclencher dans ce projet** : `dev` et `main` sont protégées côté GitHub avec `enforce_admins` actif (section suivante), donc même un `git merge` local suivi d'un `git push` serait rejeté par GitHub avant que quiconque n'atteigne la branche — il n'existe plus de chemin, y compris pour un hotfix pressé, qui contourne la PR. Le hook devient un vestige, laissé en place sans scénario d'usage réel plutôt que supprimé. Pour le flux PR, la vérification que `docwriter` est passé avant l'ouverture de la PR redevient — comme celle de `reviewer` l'a toujours été — une discipline de workflow pour Claude Code, pas quelque chose qu'un script shell peut juger.
 
 Activé via `git config core.hooksPath .githooks` (déjà fait sur ce clone — à refaire si le repo est recloné ailleurs, car cette config n'est pas versionnée automatiquement par Git).
+
+### Protection des branches (GitHub)
+
+`dev` et `main` portent une règle de protection GitHub (*Settings → Branches → Branch protection rules*) : PR obligatoire pour atteindre la branche, push direct refusé par GitHub lui-même — un filet mécanique, pas seulement une discipline documentée ici. Contrairement au hook `pre-merge-commit`, ça s'applique même à un `git push` direct qui ne passerait par aucun outil Claude Code.
 
 ## Git Workflow
 
@@ -117,12 +127,14 @@ Activé via `git config core.hooksPath .githooks` (déjà fait sur ce clone — 
 2. `git checkout dev && git merge --ff-only origin/dev`
 3. `git checkout -b feature/xxx`
 
-### Before merging into dev — mandatory sub-agent pass
+### Before opening the PR — mandatory sub-agent pass
 
-Le merge est maintenant local (plus de PR GitHub), donc un vrai hook Git (`pre-merge-commit`) redevient possible techniquement si besoin plus tard — pour l'instant, ça reste une étape de workflow documentée : Claude Code doit l'exécuter systématiquement, dans cet ordre, juste avant `git checkout dev && git merge feature/xxx` :
+Le merge passe maintenant par une PR GitHub, donc aucun hook Git local ne peut plus l'intercepter (voir section Hook Git) — c'est une étape de workflow documentée, pas mécaniquement vérifiée : Claude Code doit l'exécuter systématiquement, dans cet ordre, juste avant `git push -u origin feature/xxx` :
 
-1. **`reviewer`** (`.claude/agents/reviewer.md`) — relit le diff de la branche contre `dev`. Tout retour (bloquant ou avertissement) met le merge en pause ; Vincent lit le rapport avant de donner la consigne suivante.
+1. **`reviewer`** (`.claude/agents/reviewer.md`) — relit le diff de la branche contre `dev`. Tout retour (bloquant ou avertissement) met le push en pause ; Vincent lit le rapport avant de donner la consigne suivante.
 2. **`docwriter`** (`.claude/agents/docwriter.md`) — seulement si `reviewer` n'a rien remonté, rédige l'entrée correspondante dans `JOURNAL.md`.
+
+Une fois la PR ouverte, la vérifier régulièrement (`gh pr checks` ou l'interface GitHub) : si la PR touche `worker/*`, `worker.Tests/*`, `terraform/*` ou `azure-pipelines.yml` (filtre `pr:` du pipeline), le `terraform plan` du stage `Infra` s'y affiche, à relire avant de merger — c'est lui qui remplace la relecture humaine du hook `pre-merge-commit` pour la partie infra. Une PR qui ne touche aucun de ces chemins (doc, `.claude/`, etc.) ne déclenche aucun run : c'est attendu, pas une panne à investiguer.
 
 ### Avant de merger, ou si la branche a du retard sur `dev`
 
