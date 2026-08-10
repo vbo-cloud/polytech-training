@@ -332,6 +332,45 @@ resource "azurerm_container_registry" "acr" {
 }
 
 # ==============================================================================
+# ACR pull identity
+# ==============================================================================
+# Une seule identité User-Assigned, partagée par les trois web apps, plutôt
+# qu'une identité System-Assigned par app. Deux raisons :
+#
+# - Une identité System-Assigned n'existe qu'après la création (ou la mise à
+#   jour) de la ressource qui la porte. Y référencer son `principal_id` dans
+#   un `azurerm_role_assignment` créé au même `apply` fonctionne pour une
+#   ressource neuve (le tout se crée ensemble, cf. `worker` au Sprint 4) mais
+#   échoue pour une ressource déjà déployée sans identité, comme `vote` ici :
+#   Terraform ne peut pas résoudre `identity[0].principal_id` avant que
+#   l'identité n'existe réellement, et l'erreur ("Missing required argument")
+#   apparaît dès le `plan`, avant tout `apply` — bug connu et documenté du
+#   provider `azurerm` (aucun correctif officiel), pas une erreur de ce
+#   fichier. Une identité User-Assigned est une ressource à part entière :
+#   son `principal_id` est un attribut de premier niveau, connu après sa
+#   propre création, indépendamment des ressources qui l'utilisent ensuite.
+# - Un seul rôle `AcrPull` à maintenir plutôt que trois, pour le même effet :
+#   les trois web apps tirent depuis le même registre.
+resource "azurerm_user_assigned_identity" "acr_pull" {
+  name                = "id-acrpull-${local.base_name}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  tags = local.tags
+}
+
+# Écrire une attribution de rôle demande un droit que `Contributor` n'a pas.
+# La connexion de service du pipeline porte donc `User Access Administrator` en
+# plus, sur le seul resource group du projet — sans quoi elle ne pourrait pas
+# lancer le `terraform apply` jusqu'au bout. Attribué hors Terraform : le SP ne
+# peut pas s'accorder à lui-même le droit dont il a besoin pour le faire.
+resource "azurerm_role_assignment" "acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.acr_pull.principal_id
+}
+
+# ==============================================================================
 # App Service plan
 # ==============================================================================
 resource "azurerm_service_plan" "voting_app" {
@@ -359,10 +398,11 @@ resource "azurerm_linux_web_app" "vote" {
   # ressource séparée par application.
   virtual_network_subnet_id = azurerm_subnet.asp.id
 
-  # Sert à deux choses : tirer l'image de l'ACR sans identifiants, et porter le
-  # rôle `AcrPull` attribué plus bas — même modèle que le worker.
+  # Identité partagée, titulaire du rôle `AcrPull` — voir le commentaire sur
+  # `azurerm_user_assigned_identity.acr_pull`.
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.acr_pull.id]
   }
 
   site_config {
@@ -466,10 +506,11 @@ resource "azurerm_linux_web_app" "worker" {
 
   virtual_network_subnet_id = azurerm_subnet.asp.id
 
-  # Sert à deux choses : tirer l'image de l'ACR sans identifiants, et porter le
-  # rôle `AcrPull` attribué plus bas.
+  # Identité partagée, titulaire du rôle `AcrPull` — voir le commentaire sur
+  # `azurerm_user_assigned_identity.acr_pull`.
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.acr_pull.id]
   }
 
   site_config {
@@ -526,8 +567,11 @@ resource "azurerm_linux_web_app" "result" {
 
   virtual_network_subnet_id = azurerm_subnet.asp.id
 
+  # Identité partagée, titulaire du rôle `AcrPull` — voir le commentaire sur
+  # `azurerm_user_assigned_identity.acr_pull`.
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.acr_pull.id]
   }
 
   site_config {
@@ -568,30 +612,4 @@ resource "azurerm_linux_web_app" "result" {
   }
 
   tags = local.tags
-}
-
-# ==============================================================================
-# ACR pull permissions
-# ==============================================================================
-# Écrire une attribution de rôle demande un droit que `Contributor` n'a pas.
-# La connexion de service du pipeline porte donc `User Access Administrator` en
-# plus, sur le seul resource group du projet — sans quoi elle ne pourrait pas
-# lancer le `terraform apply` jusqu'au bout. Attribué hors Terraform : le SP ne
-# peut pas s'accorder à lui-même le droit dont il a besoin pour le faire.
-resource "azurerm_role_assignment" "worker_acr_pull" {
-  scope                = azurerm_container_registry.acr.id
-  role_definition_name = "AcrPull"
-  principal_id         = azurerm_linux_web_app.worker.identity[0].principal_id
-}
-
-resource "azurerm_role_assignment" "vote_acr_pull" {
-  scope                = azurerm_container_registry.acr.id
-  role_definition_name = "AcrPull"
-  principal_id         = azurerm_linux_web_app.vote.identity[0].principal_id
-}
-
-resource "azurerm_role_assignment" "result_acr_pull" {
-  scope                = azurerm_container_registry.acr.id
-  role_definition_name = "AcrPull"
-  principal_id         = azurerm_linux_web_app.result.identity[0].principal_id
 }
