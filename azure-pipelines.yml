@@ -1,28 +1,32 @@
-# Pipeline Azure DevOps du worker .NET — build, test, infrastructure,
-# publication de l'image dans l'ACR du projet, déploiement sur App Service.
+# Pipeline Azure DevOps des trois applications — build/test du worker .NET,
+# infrastructure, publication des images dans l'ACR du projet, déploiement sur
+# App Service.
 #
 # Une PR vers `dev` compile, teste et affiche le `plan` Terraform, sans rien
-# créer ni déployer. Un merge sur `dev` applique le plan, pousse l'image et
+# créer ni déployer. Un merge sur `dev` applique le plan, pousse les images et
 # déploie. Un seul environnement, `dev` (décision #13) : rien ne s'appelle
 # « prod » ici.
 #
-# Périmètre volontairement limité à `worker/`. Les fronts `vote` (Python) et
-# `result` (Node.js) restent déployés depuis le registre public d'Avisto :
-# les réécrire ou les industrialiser n'apporterait rien côté DevOps
-# (cf. CLAUDE.md, décision de scope #3).
+# Build et Test ne couvrent que le worker .NET — `vote` (Python) et `result`
+# (Node.js) n'ont pas de suite de tests à faire tourner ici. Les trois
+# applications sont en revanche construites et déployées depuis ce dépôt : les
+# fronts ne pointent plus le registre public d'Avisto (cf. CLAUDE.md, décision
+# de scope #3, révisée).
 
 trigger:
   branches:
     include:
       - dev
       - main
-  # Un commit qui ne touche ni le worker ni ce fichier ne peut pas changer
-  # l'image produite. Sans ce filtre, une correction de README déclenche un
-  # build, un push d'image et un déploiement.
+  # Un commit qui ne touche à aucune des trois applications ni à ce fichier ne
+  # peut pas changer une image produite. Sans ce filtre, une correction de
+  # README déclenche un build, un push d'image et un déploiement.
   paths:
     include:
       - worker/*
       - worker.Tests/*
+      - vote/*
+      - result/*
       - terraform/*
       - azure-pipelines.yml
 
@@ -37,6 +41,8 @@ pr:
     include:
       - worker/*
       - worker.Tests/*
+      - vote/*
+      - result/*
       - terraform/*
       - azure-pipelines.yml
 
@@ -68,8 +74,12 @@ variables:
     value: worker/Worker.csproj
   - name: testProject
     value: worker.Tests/Worker.Tests.csproj
-  - name: imageRepository
+  - name: workerImageRepository
     value: polytech/worker
+  - name: voteImageRepository
+    value: polytech/vote
+  - name: resultImageRepository
+    value: polytech/result
   # Le tag identifie le run qui l'a produit. `latest` est proscrit ici comme
   # dans Terraform : il rend impossible de dire quelle version tourne.
   - name: imageTag
@@ -279,6 +289,8 @@ stages:
                 emit acr_name             acrName
                 emit acr_login_server     acrLoginServer
                 emit worker_web_app_name  workerWebAppName
+                emit vote_web_app_name    voteWebAppName
+                emit result_web_app_name  resultWebAppName
 
   # ============================================================================
   - stage: Publish
@@ -297,7 +309,7 @@ stages:
     # chaque PR, au lieu de ne jamais poser la question.
     condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
     jobs:
-      - job: PublishImage
+      - job: PublishWorkerImage
         displayName: Build and push the worker image
         steps:
           # `az acr build` plutôt que Docker@2 : le projet n'a qu'une connexion
@@ -335,8 +347,42 @@ stages:
                 set -euo pipefail
                 az acr build \
                   --registry "$(acrName)" \
-                  --image "$(imageRepository):$(imageTag)" \
+                  --image "$(workerImageRepository):$(imageTag)" \
                   worker/
+
+      # Même commande, même raisonnement sur `--file` et sur la redite avec
+      # les Dockerfiles locaux — voir les commentaires du job précédent.
+      - job: PublishVoteImage
+        displayName: Build and push the vote image
+        steps:
+          - task: AzureCLI@2
+            displayName: az acr build
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az acr build \
+                  --registry "$(acrName)" \
+                  --image "$(voteImageRepository):$(imageTag)" \
+                  vote/
+
+      - job: PublishResultImage
+        displayName: Build and push the result image
+        steps:
+          - task: AzureCLI@2
+            displayName: az acr build
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az acr build \
+                  --registry "$(acrName)" \
+                  --image "$(resultImageRepository):$(imageTag)" \
+                  result/
 
   # ============================================================================
   - stage: Deploy
@@ -352,6 +398,8 @@ stages:
       resourceGroupName: $[ stageDependencies.Infra.Terraform.outputs['tfOutputs.resourceGroupName'] ]
       acrLoginServer: $[ stageDependencies.Infra.Terraform.outputs['tfOutputs.acrLoginServer'] ]
       workerWebAppName: $[ stageDependencies.Infra.Terraform.outputs['tfOutputs.workerWebAppName'] ]
+      voteWebAppName: $[ stageDependencies.Infra.Terraform.outputs['tfOutputs.voteWebAppName'] ]
+      resultWebAppName: $[ stageDependencies.Infra.Terraform.outputs['tfOutputs.resultWebAppName'] ]
     jobs:
       # Déploiement direct sur l'application, sans slot intermédiaire. Le plan
       # App Service est en Basic, qui n'offre aucun deployment slot (décision
@@ -383,4 +431,34 @@ stages:
                     azureSubscription: $(azureServiceConnection)
                     appName: $(workerWebAppName)
                     resourceGroupName: $(resourceGroupName)
-                    containers: $(acrLoginServer)/$(imageRepository):$(imageTag)
+                    containers: $(acrLoginServer)/$(workerImageRepository):$(imageTag)
+
+      - deployment: DeployVote
+        displayName: Deploy the vote front end
+        environment: polytech-training-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureWebAppContainer@1
+                  displayName: Deploy the image to the vote web app
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    appName: $(voteWebAppName)
+                    resourceGroupName: $(resourceGroupName)
+                    containers: $(acrLoginServer)/$(voteImageRepository):$(imageTag)
+
+      - deployment: DeployResult
+        displayName: Deploy the result front end
+        environment: polytech-training-dev
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: AzureWebAppContainer@1
+                  displayName: Deploy the image to the result web app
+                  inputs:
+                    azureSubscription: $(azureServiceConnection)
+                    appName: $(resultWebAppName)
+                    resourceGroupName: $(resourceGroupName)
+                    containers: $(acrLoginServer)/$(resultImageRepository):$(imageTag)

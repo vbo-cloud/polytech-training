@@ -46,7 +46,7 @@ variable "resource_group_location" {
 variable "service_plan_sku" {
   type        = string
   default     = "B1"
-  description = "SKU of the shared App Service plan hosting the vote front end and the worker. B1 by default (CLAUDE.md decision #11): the project demonstrates a pipeline, not a production topology. Deployment slots need Standard or above — moving up is a one-line change here, but it also brings back `azurerm_linux_web_app_slot` and the swap stage, both removed."
+  description = "SKU of the shared App Service plan hosting the vote front end, the worker and the result dashboard. B1 by default (CLAUDE.md decision #11): the project demonstrates a pipeline, not a production topology. Deployment slots need Standard or above — moving up is a one-line change here, but it also brings back `azurerm_linux_web_app_slot` and the swap stage, both removed."
 
   validation {
     # Le plancher est le tier dédié : Free et Shared partagent leur machine,
@@ -76,21 +76,10 @@ variable "postgresql_administrator_login" {
 # ==============================================================================
 # Container image
 # ==============================================================================
-# Deux registres coexistent volontairement, d'où le préfixe `vote_` : le worker
-# tire son image de l'ACR du projet, dont l'URL est calculée à l'apply et ne
-# peut donc pas vivre ici. Le vote, lui, reste sur le registre public d'Avisto —
-# le pipeline ne construit que l'image du worker, et basculer le vote sur l'ACR
-# le casserait tant que son image n'y est pas poussée.
-variable "vote_registry_url" {
-  type        = string
-  description = "Container registry the vote web app pulls its image from, as an https:// URL. Avisto's public registry, not the project ACR — the worker uses `azurerm_container_registry.acr.login_server`, a computed value that cannot be set here. No default: an empty value silently falls back to Docker Hub, where this image does not exist, and the failure would surface at container pull rather than at plan."
-
-  validation {
-    condition     = startswith(var.vote_registry_url, "https://")
-    error_message = "L'URL du registre doit commencer par https:// — App Service refuse un registre en clair."
-  }
-}
-
+# Les trois web apps tirent désormais leur image de l'ACR du projet — plus de
+# registre externe à distinguer par préfixe. Chaque variable ne porte que le
+# `repository:tag` ; l'URL du registre est calculée à l'apply
+# (`azurerm_container_registry.acr.login_server`) et ne peut donc pas vivre ici.
 variable "web_app_worker_docker_image_name" {
   type        = string
   description = "Repository and tag of the worker image in the project ACR, as `repository:tag`. Bootstrap value only: Terraform sets it at creation, then `ignore_changes` hands the tag over to the pipeline, which deploys `$(Build.BuildId)` on every run. Until the first pipeline run this image does not exist yet and the worker will not start."
@@ -103,7 +92,7 @@ variable "web_app_worker_docker_image_name" {
 
 variable "web_app_vote_docker_image_name" {
   type        = string
-  description = "Repository and tag of the vote image, as `repository:tag`. No default: a web app deployed without an image is broken, and an empty default hides that until runtime."
+  description = "Repository and tag of the vote image in the project ACR, as `repository:tag`. Bootstrap value only, same `ignore_changes` handoff to the pipeline as the worker. No default: a web app deployed without an image is broken, and an empty default hides that until runtime."
 
   validation {
     # Le tag est ce qui suit le dernier `:` et ne peut pas contenir de `/` :
@@ -112,5 +101,15 @@ variable "web_app_vote_docker_image_name" {
     # puisqu'il est syntaxiquement valide mais non reproductible.
     condition     = can(regex("^.+:[A-Za-z0-9_][A-Za-z0-9._-]*$", var.web_app_vote_docker_image_name)) && !endswith(var.web_app_vote_docker_image_name, ":latest")
     error_message = "L'image doit porter un tag explicite et non vide, autre que `latest` (ex. `polytech/vote:1.0.1`) — sinon la version réellement déployée n'est pas reproductible."
+  }
+}
+
+variable "web_app_result_docker_image_name" {
+  type        = string
+  description = "Repository and tag of the result image in the project ACR, as `repository:tag`. Bootstrap value only, same `ignore_changes` handoff to the pipeline as the worker and the vote."
+
+  validation {
+    condition     = can(regex("^.+:[A-Za-z0-9_][A-Za-z0-9._-]*$", var.web_app_result_docker_image_name)) && !endswith(var.web_app_result_docker_image_name, ":latest")
+    error_message = "L'image doit porter un tag explicite et non vide, autre que `latest` (ex. `polytech/result:1.0.1`) — sinon la version réellement déployée n'est pas reproductible."
   }
 }

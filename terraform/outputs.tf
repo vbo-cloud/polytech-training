@@ -33,12 +33,27 @@ output "worker_web_app_name" {
   description = "Worker web app name. Feeds the `workerWebAppName` pipeline variable, which the deploy stage targets directly — the plan is Basic, so there is no slot to deploy through (CLAUDE.md decision #11)."
 }
 
+output "vote_web_app_name" {
+  value       = azurerm_linux_web_app.vote.name
+  description = "Vote web app name. Feeds the `voteWebAppName` pipeline variable, which the deploy stage targets directly — same reasoning as `worker_web_app_name`."
+}
+
+output "result_web_app_name" {
+  value       = azurerm_linux_web_app.result.name
+  description = "Result web app name. Feeds the `resultWebAppName` pipeline variable, which the deploy stage targets directly — same reasoning as `worker_web_app_name`."
+}
+
 # ==============================================================================
 # Points d'entrée applicatifs
 # ==============================================================================
 output "vote_url" {
   value       = "https://${azurerm_linux_web_app.vote.default_hostname}"
-  description = "Public URL of the vote front end — the only application endpoint reachable from outside the VNET."
+  description = "Public URL of the vote front end."
+}
+
+output "result_url" {
+  value       = "https://${azurerm_linux_web_app.result.default_hostname}"
+  description = "Public URL of the result dashboard."
 }
 
 output "postgresql_fqdn" {

@@ -332,6 +332,45 @@ resource "azurerm_container_registry" "acr" {
 }
 
 # ==============================================================================
+# ACR pull identity
+# ==============================================================================
+# Une seule identité User-Assigned, partagée par les trois web apps, plutôt
+# qu'une identité System-Assigned par app. Deux raisons :
+#
+# - Une identité System-Assigned n'existe qu'après la création (ou la mise à
+#   jour) de la ressource qui la porte. Y référencer son `principal_id` dans
+#   un `azurerm_role_assignment` créé au même `apply` fonctionne pour une
+#   ressource neuve (le tout se crée ensemble, cf. `worker` au Sprint 4) mais
+#   échoue pour une ressource déjà déployée sans identité, comme `vote` ici :
+#   Terraform ne peut pas résoudre `identity[0].principal_id` avant que
+#   l'identité n'existe réellement, et l'erreur ("Missing required argument")
+#   apparaît dès le `plan`, avant tout `apply` — bug connu et documenté du
+#   provider `azurerm` (aucun correctif officiel), pas une erreur de ce
+#   fichier. Une identité User-Assigned est une ressource à part entière :
+#   son `principal_id` est un attribut de premier niveau, connu après sa
+#   propre création, indépendamment des ressources qui l'utilisent ensuite.
+# - Un seul rôle `AcrPull` à maintenir plutôt que trois, pour le même effet :
+#   les trois web apps tirent depuis le même registre.
+resource "azurerm_user_assigned_identity" "acr_pull" {
+  name                = "id-acrpull-${local.base_name}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+  tags = local.tags
+}
+
+# Écrire une attribution de rôle demande un droit que `Contributor` n'a pas.
+# La connexion de service du pipeline porte donc `User Access Administrator` en
+# plus, sur le seul resource group du projet — sans quoi elle ne pourrait pas
+# lancer le `terraform apply` jusqu'au bout. Attribué hors Terraform : le SP ne
+# peut pas s'accorder à lui-même le droit dont il a besoin pour le faire.
+resource "azurerm_role_assignment" "acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.acr_pull.principal_id
+}
+
+# ==============================================================================
 # App Service plan
 # ==============================================================================
 resource "azurerm_service_plan" "voting_app" {
@@ -359,6 +398,13 @@ resource "azurerm_linux_web_app" "vote" {
   # ressource séparée par application.
   virtual_network_subnet_id = azurerm_subnet.asp.id
 
+  # Identité partagée, titulaire du rôle `AcrPull` — voir le commentaire sur
+  # `azurerm_user_assigned_identity.acr_pull`.
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.acr_pull.id]
+  }
+
   site_config {
     # L'intégration VNET régionale route déjà les destinations RFC1918 par
     # défaut, mais pas les requêtes DNS de l'app. Sans ce réglage,
@@ -368,8 +414,18 @@ resource "azurerm_linux_web_app" "vote" {
     # `route_all` étend le routage à 0.0.0.0/0 et fait passer le DNS par le VNET.
     vnet_route_all_enabled = true
 
+    # Le pull passe par l'identité managée. Sans cette ligne, App Service
+    # cherche des identifiants de registre dans les app_settings et échoue —
+    # l'ACR a `admin_enabled = false`, il n'y en a aucun.
+    container_registry_use_managed_identity = true
+
+    # Obligatoire avec une identité `UserAssigned` : `use_managed_identity`
+    # seul ne dit pas *laquelle* utiliser, et App Service retomberait sur une
+    # identité système que ces apps n'ont plus.
+    container_registry_managed_identity_client_id = azurerm_user_assigned_identity.acr_pull.client_id
+
     application_stack {
-      docker_registry_url = var.vote_registry_url
+      docker_registry_url = "https://${azurerm_container_registry.acr.login_server}"
       docker_image_name   = var.web_app_vote_docker_image_name
     }
   }
@@ -388,8 +444,22 @@ resource "azurerm_linux_web_app" "vote" {
     # Azure Managed Redis (architecture Redis Enterprise) n'utilise pas le
     # port 6380 de l'ancien Azure Cache for Redis, mais laisser le provider
     # exposer la valeur réelle évite de la re-deviner si Azure la fait évoluer.
-    "REDIS_CONNECTION_STRING"             = "rediss://:${urlencode(azurerm_managed_redis.redis.default_database[0].primary_access_key)}@${azurerm_managed_redis.redis.hostname}:${azurerm_managed_redis.redis.default_database[0].port}/0"
+    "REDIS_CONNECTION_STRING" = "rediss://:${urlencode(azurerm_managed_redis.redis.default_database[0].primary_access_key)}@${azurerm_managed_redis.redis.hostname}:${azurerm_managed_redis.redis.default_database[0].port}/0"
+
+    # `vote/Dockerfile` écoute sur 8000, pas 80 (utilisateur non-root, cf.
+    # docker-conventions SKILL.md). Tant que l'app tirait l'image préconstruite
+    # d'Avisto, son port réel était inconnu et ce réglage n'aurait rien
+    # garanti ; maintenant qu'elle tire l'image buildée depuis ce dépôt, sans
+    # cette ligne App Service sonderait 80 et renverrait 502.
+    "WEBSITES_PORT" = "8000"
+
     "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
+  }
+
+  # Le tag d'image appartient au pipeline, pas à Terraform — même raison que
+  # pour le worker : chaque run pousse `$(Build.BuildId)` et déploie ce tag.
+  lifecycle {
+    ignore_changes = [site_config[0].application_stack[0].docker_image_name]
   }
 
   tags = local.tags
@@ -441,10 +511,11 @@ resource "azurerm_linux_web_app" "worker" {
 
   virtual_network_subnet_id = azurerm_subnet.asp.id
 
-  # Sert à deux choses : tirer l'image de l'ACR sans identifiants, et porter le
-  # rôle `AcrPull` attribué plus bas.
+  # Identité partagée, titulaire du rôle `AcrPull` — voir le commentaire sur
+  # `azurerm_user_assigned_identity.acr_pull`.
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.acr_pull.id]
   }
 
   site_config {
@@ -456,6 +527,10 @@ resource "azurerm_linux_web_app" "worker" {
     # cherche des identifiants de registre dans les app_settings et échoue —
     # l'ACR a `admin_enabled = false`, il n'y en a aucun.
     container_registry_use_managed_identity = true
+
+    # Obligatoire avec une identité `UserAssigned` — voir le commentaire sur
+    # le vote.
+    container_registry_managed_identity_client_id = azurerm_user_assigned_identity.acr_pull.client_id
 
     # Slash final volontaire : le worker enregistre le préfixe
     # `http://*:8080/healthz/`. HttpListener sous Windows accepte la requête
@@ -491,15 +566,63 @@ resource "azurerm_linux_web_app" "worker" {
 }
 
 # ==============================================================================
-# ACR pull permissions
+# Web app — result
 # ==============================================================================
-# Écrire une attribution de rôle demande un droit que `Contributor` n'a pas.
-# La connexion de service du pipeline porte donc `User Access Administrator` en
-# plus, sur le seul resource group du projet — sans quoi elle ne pourrait pas
-# lancer le `terraform apply` jusqu'au bout. Attribué hors Terraform : le SP ne
-# peut pas s'accorder à lui-même le droit dont il a besoin pour le faire.
-resource "azurerm_role_assignment" "worker_acr_pull" {
-  scope                = azurerm_container_registry.acr.id
-  role_definition_name = "AcrPull"
-  principal_id         = azurerm_linux_web_app.worker.identity[0].principal_id
+resource "azurerm_linux_web_app" "result" {
+  name                = "app-result-${local.base_name}-${random_string.suffix.result}"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+  service_plan_id     = azurerm_service_plan.voting_app.id
+
+  virtual_network_subnet_id = azurerm_subnet.asp.id
+
+  # Identité partagée, titulaire du rôle `AcrPull` — voir le commentaire sur
+  # `azurerm_user_assigned_identity.acr_pull`.
+  identity {
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.acr_pull.id]
+  }
+
+  site_config {
+    # Résout `psql-....postgres.database.azure.com` par le VNET plutôt que par
+    # l'IP publique, fermée — même raison que pour le vote et le worker.
+    vnet_route_all_enabled = true
+
+    container_registry_use_managed_identity = true
+
+    # Obligatoire avec une identité `UserAssigned` — voir le commentaire sur
+    # le vote.
+    container_registry_managed_identity_client_id = azurerm_user_assigned_identity.acr_pull.client_id
+
+    # `result/server.js` sert un tableau de bord en temps réel par Socket.IO.
+    # Le provider laisse cet argument à `false` par défaut ; sans lui, App
+    # Service refuse l'upgrade WebSocket et Socket.IO retombe en silence sur
+    # le long polling — la page a l'air de marcher, mais plus en temps réel.
+    websockets_enabled = true
+
+    application_stack {
+      docker_registry_url = "https://${azurerm_container_registry.acr.login_server}"
+      docker_image_name   = var.web_app_result_docker_image_name
+    }
+  }
+
+  app_settings = {
+    # `result/server.js` construit son pool avec `pg.Pool({ connectionString })`,
+    # qui attend un URI `postgres://user:pass@host:port/db` — un format
+    # différent du worker (chaîne à clés `Host=...;Port=...`), la
+    # bibliothèque `pg` ne lisant pas ce dernier.
+    "POSTGRESQL_CONNECTION_STRING" = "postgres://${var.postgresql_administrator_login}:${urlencode(random_password.psql_admin.result)}@${azurerm_postgresql_flexible_server.psql.fqdn}:5432/${azurerm_postgresql_flexible_server_database.votes.name}?sslmode=require"
+
+    # `result/server.js` lit `process.env.PORT`, écoute 4000 par défaut si
+    # absent — mais sans ce réglage App Service sonderait 80 quand même.
+    "WEBSITES_PORT" = "4000"
+
+    "WEBSITES_ENABLE_APP_SERVICE_STORAGE" = "false"
+  }
+
+  lifecycle {
+    ignore_changes = [site_config[0].application_stack[0].docker_image_name]
+  }
+
+  tags = local.tags
 }
