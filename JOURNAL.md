@@ -321,3 +321,22 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 **Décisions techniques** :
 
 - **`dependencies.<stage>.outputs[...]` ne s'évalue que dans un `condition:`, jamais dans un bloc `variables:`.** Selon la documentation Microsoft Learn (« Expressions - Azure Pipelines », section Dependencies), référencer la sortie d'un job d'une stage précédente depuis `variables:` exige la forme `stageDependencies.<stage>.<job>.outputs['<step>.<variable>']`. La forme utilisée jusqu'ici s'évaluait silencieusement à vide plutôt que d'échouer, ce qui a laissé passer trois runs de pipeline avant que l'erreur ne se manifeste réellement au stage `Publish`.
+
+---
+
+## #13 — fix/psql-zone-drift
+
+**Contexte avant** : `fix/pipeline-stage-output-variables` (entrée #12) venait d'être mergée dans `dev` — le pipeline lisait enfin correctement les sorties Terraform. Le merge a déclenché un `terraform apply` réel contre `dev`, qui a échoué sur `azurerm_postgresql_flexible_server.psql` avec « `zone` can only be changed when exchanged with the zone specified in `high_availability.0.standby_availability_zone` », alors que `zone` n'est jamais renseigné dans le `.tf`. `azurerm_subnet.psql`, modifié dans le même run, a suffi à déclencher un diff sur `zone`.
+
+**Objectif** : faire à nouveau passer un `apply` réel contre `dev`, sans introduire de haute disponibilité que le projet n'a pas et n'a pas prévue.
+
+**Ce qui a été fait** :
+
+- `lifecycle { ignore_changes = [zone] }` ajouté sur `azurerm_postgresql_flexible_server.psql`.
+- Une passe `reviewer` a remonté deux points : l'absence de trace du contournement hors du commentaire de code, et l'ordre des méta-arguments (`lifecycle` après `tags`) incohérent avec le seul autre précédent du fichier (`azurerm_linux_web_app.worker`, où `lifecycle` précède `tags`).
+- Corrigés dans un second commit : `lifecycle` réordonné avant `tags`, et une entrée de dette ajoutée dans `SUIVI.md` (Sprint 4, sous-puce du bullet Postgres existant), avec le lien vers l'issue amont et la condition de retrait.
+- Deuxième passe `reviewer` : aucun retour.
+
+**Décisions techniques** :
+
+- **`ignore_changes = [zone]` plutôt qu'un correctif de fond, parce qu'il n'y en a pas côté projet.** C'est un bug connu et toujours ouvert du provider `azurerm` ([hashicorp/terraform-provider-azurerm#25538](https://github.com/hashicorp/terraform-provider-azurerm/issues/25538)) : il recalcule parfois une valeur de `zone` différente de celle qu'Azure a réellement assignée dès qu'un autre changement force un `plan` sur le serveur, et Azure refuse ce changement sans zone de standby à échanger — que ce projet n'a pas, faute de `high_availability`. `ignore_changes` est la mitigation standard en attendant un correctif amont. La dette tracée dans `SUIVI.md` porte la condition de retrait explicite : correctif provider, ou réexamen si `high_availability` est introduit un jour — `ignore_changes` masquerait alors aussi un changement de zone réellement voulu.
