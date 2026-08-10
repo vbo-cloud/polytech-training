@@ -111,7 +111,20 @@ resource "azurerm_managed_redis" "redis" {
   # Bloc obligatoire à la création, même vide : la base par défaut du cache.
   # `geo_replication_group_name` ne s'applique qu'à partir de Balanced_B3,
   # sans objet ici.
-  default_database {}
+  default_database {
+    # Azure Managed Redis n'active que Microsoft Entra ID par défaut à la
+    # création (« secure by default », documenté par Microsoft) — la clé
+    # d'accès existe toujours comme attribut (`primary_access_key`), mais le
+    # serveur refuse de s'authentifier avec tant que ce réglage n'est pas
+    # explicite. `vote` et `worker` s'authentifient tous les deux par clé
+    # (`REDIS_CONNECTION_STRING`), pas par jeton Entra ID : sans cette ligne,
+    # `redis.from_url()` échoue avec `AuthenticationError: HELLO must be
+    # called with the client already authenticated` côté vote, et
+    # StackExchange.Redis échoue de façon symétrique côté worker — constaté
+    # sur le premier test bout-en-bout réel du flux vote → worker → result en
+    # Azure, jamais vérifié avant cette branche.
+    access_keys_authentication_enabled = true
+  }
 
   tags = local.tags
 }
