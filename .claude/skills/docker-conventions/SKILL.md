@@ -13,7 +13,7 @@ Ces règles viennent en bonne partie de vraies erreurs corrigées pendant le dé
 
 ```dockerfile
 # Bon ordre
-COPY requirements.txt .      # ou package*.json, ou *.csproj
+COPY requirements.txt .      # ou package*.json ./, ou *.csproj
 RUN pip install -r requirements.txt
 COPY . .
 ```
@@ -23,6 +23,8 @@ COPY . .
 RUN pip install -r requirements.txt
 ```
 `worker/Dockerfile` (fourni par Avisto) ne suivait pas cette règle — corrigé en Sprint 1.
+
+**Destination en `/` explicite dès que la source est un glob qui matche plusieurs fichiers.** `COPY package*.json .` matche `package.json` **et** `package-lock.json` — deux fichiers vers une seule destination. Le builder BuildKit (celui de Docker Desktop, utilisé par `docker compose build` en local) l'accepte sans broncher, mais le builder classique (celui utilisé par `az acr build` derrière `acb_vol`) le refuse : `When using COPY with more than one source file, the destination must be a directory and end with a /`. Un Dockerfile qui compile en local peut donc casser uniquement en CI, sans qu'aucun `terraform plan`/`validate` ne le voie — l'erreur est spécifique à `docker build`. Constaté sur `result/Dockerfile` : `COPY package*.json .` → `COPY package*.json ./`. `requirements.txt` et `*.csproj` n'y sont pas exposés : ce sont des noms de fichier littéraux, pas des globs, donc une seule source garantie — la distinction porte sur le glob, pas sur le langage.
 
 ## WORKDIR : le fixer une seule fois, tout en haut
 

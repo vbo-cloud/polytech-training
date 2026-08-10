@@ -1,6 +1,6 @@
 FROM node:24.19.0-alpine
 WORKDIR /app
-COPY package*.json .
+COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
 # The node image already ships an unprivileged "node" user (uid 1000). Placed
