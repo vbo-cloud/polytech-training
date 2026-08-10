@@ -46,7 +46,7 @@ variable "resource_group_location" {
 variable "service_plan_sku" {
   type        = string
   default     = "B1"
-  description = "SKU of the shared App Service plan hosting the vote front end and the worker. B1 by default (CLAUDE.md decision #11): the project demonstrates a pipeline, not a production topology. Deployment slots need Standard or above — moving up is a one-line change here, but it also brings back `azurerm_linux_web_app_slot` and the swap stage, both removed."
+  description = "SKU of the shared App Service plan hosting the vote front end, the worker and the result dashboard. B1 by default (CLAUDE.md decision #11): the project demonstrates a pipeline, not a production topology. Deployment slots need Standard or above — moving up is a one-line change here, but it also brings back `azurerm_linux_web_app_slot` and the swap stage, both removed."
 
   validation {
     # Le plancher est le tier dédié : Free et Shared partagent leur machine,
