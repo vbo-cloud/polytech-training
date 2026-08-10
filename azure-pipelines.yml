@@ -245,7 +245,11 @@ stages:
           # écrit, pas dans un groupe de variables tenu à la main : ils suivent
           # donc d'eux-mêmes un cycle destroy / apply. `isOutput=true` les rend
           # visibles des stages suivants, sous la forme
-          # `dependencies.Infra.outputs['Terraform.tfOutputs.<nom>']`.
+          # `stageDependencies.Infra.Terraform.outputs['tfOutputs.<nom>']`.
+          # Pas `dependencies.Infra.outputs[...]` : cette forme ne s'évalue que
+          # dans un `condition:`, jamais dans un bloc `variables:` — utilisée ici
+          # par erreur, elle rendait `acrName` et les trois variables du stage
+          # `Deploy` vides, jusqu'à l'échec réel `az acr build` qui l'a révélé.
           - task: AzureCLI@2
             name: tfOutputs
             displayName: Export the terraform outputs
@@ -285,7 +289,7 @@ stages:
     # Le nom du registre vient du state Terraform, pas du groupe de variables :
     # il change à chaque cycle destroy / apply.
     variables:
-      acrName: $[ dependencies.Infra.outputs['Terraform.tfOutputs.acrName'] ]
+      acrName: $[ stageDependencies.Infra.Terraform.outputs['tfOutputs.acrName'] ]
     # Une validation de PR s'arrête après les tests. Sans cette garde, elle
     # pousserait une image et déploierait le worker depuis une branche que
     # personne n'a encore relue. L'approbation posée sur l'environnement ne
@@ -336,9 +340,9 @@ stages:
       - Publish
     condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
     variables:
-      resourceGroupName: $[ dependencies.Infra.outputs['Terraform.tfOutputs.resourceGroupName'] ]
-      acrLoginServer: $[ dependencies.Infra.outputs['Terraform.tfOutputs.acrLoginServer'] ]
-      workerWebAppName: $[ dependencies.Infra.outputs['Terraform.tfOutputs.workerWebAppName'] ]
+      resourceGroupName: $[ stageDependencies.Infra.Terraform.outputs['tfOutputs.resourceGroupName'] ]
+      acrLoginServer: $[ stageDependencies.Infra.Terraform.outputs['tfOutputs.acrLoginServer'] ]
+      workerWebAppName: $[ stageDependencies.Infra.Terraform.outputs['tfOutputs.workerWebAppName'] ]
     jobs:
       # Déploiement direct sur l'application, sans slot intermédiaire. Le plan
       # App Service est en Basic, qui n'offre aucun deployment slot (décision

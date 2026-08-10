@@ -303,3 +303,21 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 - **Version figée à 1.9.8, dans la plage `~> 1.9` que `providers.tf` exige déjà.** Le `required_version` continue de faire échouer le stage si un futur changement de version dérive hors plage, plutôt que de laisser passer un binaire inattendu.
 - **Installé dans `/usr/local/bin`, déjà dans le `PATH` par défaut de l'image.** Aucune manipulation de `PATH` nécessaire pour que les tâches `AzureCLI@2` suivantes, dans le même job, trouvent le binaire.
 - **`health_check_eviction_time_in_min` posé à 2, le minimum de la plage acceptée (2-10), pas une valeur métier réfléchie.** Cet argument sert normalement à retirer une instance défaillante de la rotation après N minutes d'échecs répétés sur un App Service Plan à plusieurs instances ; ce projet tourne sur une instance unique (B1, pas de slots — décision #11 de `CLAUDE.md`), donc la valeur n'a aucun effet réel. Elle n'existe que parce que le provider la rend obligatoire dès que `health_check_path` est posé. Poser le minimum documente que c'est un artefact de compatibilité de schéma, pas un réglage à ajuster plus tard.
+
+---
+
+## #12 — fix/pipeline-stage-output-variables
+
+**Contexte avant** : `feature/pipeline-install-terraform` (entrée #11) venait d'être mergée dans `dev` — un vrai merge sur `dev` a fait tourner le pipeline complet pour la première fois jusqu'au stage `Publish`, qui a échoué sur `az acr build --registry "$(acrName)"` avec « Registry names may contain only alpha numeric characters and must be between 5 and 50 characters », signe que `$(acrName)` était vide.
+
+**Objectif** : faire lire correctement aux stages `Publish` et `Deploy` les sorties Terraform publiées par le stage `Infra`.
+
+**Ce qui a été fait** :
+
+- Les 4 variables concernées (`acrName` dans `Publish` ; `resourceGroupName`, `acrLoginServer`, `workerWebAppName` dans `Deploy`) passent de `dependencies.Infra.outputs['Terraform.tfOutputs.<nom>']` à `stageDependencies.Infra.Terraform.outputs['tfOutputs.<nom>']`.
+- Commentaire du YAML mis à jour pour refléter la bonne syntaxe et expliquer l'erreur corrigée.
+- Passe `reviewer` : aucun retour — syntaxe conforme à la doc, `dependsOn: Infra` bien présent sur les deux stages consommatrices, YAML valide.
+
+**Décisions techniques** :
+
+- **`dependencies.<stage>.outputs[...]` ne s'évalue que dans un `condition:`, jamais dans un bloc `variables:`.** Selon la documentation Microsoft Learn (« Expressions - Azure Pipelines », section Dependencies), référencer la sortie d'un job d'une stage précédente depuis `variables:` exige la forme `stageDependencies.<stage>.<job>.outputs['<step>.<variable>']`. La forme utilisée jusqu'ici s'évaluait silencieusement à vide plutôt que d'échouer, ce qui a laissé passer trois runs de pipeline avant que l'erreur ne se manifeste réellement au stage `Publish`.
