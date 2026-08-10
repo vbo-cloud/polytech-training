@@ -170,17 +170,31 @@ stages:
   # pas un second calcul. Un `apply` qui replanifie peut exécuter autre chose
   # que ce qui vient d'être relu, si l'infra a bougé entre les deux.
   #
-  # Terraform est préinstallé sur l'image `ubuntu-latest`. Le `required_version`
-  # de `providers.tf` fait échouer le stage si l'agent dérive hors de la plage
+  # Terraform n'est pas installé sur l'image `ubuntu-latest` — contrairement à
+  # une hypothèse initiale de ce pipeline, invalidée par le premier run réel
+  # (`terraform: command not found`). Installé explicitement ci-dessous, sans
+  # extension de la marketplace, pour ne dépendre que de ce que l'organisation
+  # Azure DevOps a déjà. Le `required_version` de `providers.tf` (`~> 1.9`)
+  # fait échouer le stage si la version installée dérive hors de la plage
   # supportée, plutôt que de laisser passer une version inattendue.
   - stage: Infra
     displayName: Infrastructure
     dependsOn: Test
     condition: succeeded()
+    variables:
+      terraformVersion: 1.9.8
     jobs:
       - job: Terraform
         displayName: Plan and apply the infrastructure
         steps:
+          - bash: |
+              set -euo pipefail
+              curl -fsSL -o /tmp/terraform.zip \
+                "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip"
+              sudo unzip -o /tmp/terraform.zip -d /usr/local/bin
+              terraform -version
+            displayName: Install Terraform
+
           # `addSpnToEnvironment` expose les identifiants du service principal
           # au script, qui les recopie dans les variables `ARM_*` attendues par
           # le provider. Sans ça, Terraform ne s'authentifie pas : la tâche

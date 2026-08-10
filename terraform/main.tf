@@ -450,6 +450,12 @@ resource "azurerm_linux_web_app" "worker" {
     # une sonde qui échoue ici recycle le conteneur en boucle.
     health_check_path = "/healthz/"
 
+    # Le provider exige les deux en même temps dès que l'un est posé, même sur
+    # un plan à instance unique où il n'y a rien vers quoi basculer. Valeur
+    # minimale acceptée (2-10) : rien à optimiser tant qu'il n'y a pas de
+    # deuxième instance.
+    health_check_eviction_time_in_min = 2
+
     application_stack {
       docker_registry_url = "https://${azurerm_container_registry.acr.login_server}"
       docker_image_name   = var.web_app_worker_docker_image_name
