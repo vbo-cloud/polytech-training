@@ -312,9 +312,19 @@ stages:
           # local, et en maintenir une variante CI qui consommerait un artefact
           # ferait diverger l'image testée en local de celle déployée.
           #
-          # `--file` est relatif au contexte passé en dernier argument, pas au
-          # répertoire de travail de l'agent : `--file worker/Dockerfile` avec
-          # le contexte `worker/` ferait chercher `worker/worker/Dockerfile`.
+          # Pas de `--file` : sa valeur par défaut ('Dockerfile') est jointe par
+          # la CLI au contexte passé en dernier argument (`worker/Dockerfile`).
+          # Un `--file` explicite suit une règle différente, contrairement à ce
+          # que suggère l'aide de la commande (« relative path... to the source
+          # code root folder », qui laisse croire qu'il est toujours relatif au
+          # contexte) — la CLI le résout en réalité relatif à son propre
+          # répertoire de travail. Constaté sur un run réel :
+          # `--file Dockerfile` avec le contexte `worker/` cherchait
+          # `./Dockerfile` à la racine du dépôt (répertoire de travail par
+          # défaut de la tâche `AzureCLI@2`, aucun `workingDirectory` déclaré
+          # ici), pas `worker/Dockerfile` — `ERROR: Unable to find 'Dockerfile'.`
+          # Source : `_check_local_docker_file` dans
+          # `azure/cli/command_modules/acr/build.py` (dépôt `Azure/azure-cli`).
           - task: AzureCLI@2
             displayName: az acr build
             inputs:
@@ -326,7 +336,6 @@ stages:
                 az acr build \
                   --registry "$(acrName)" \
                   --image "$(imageRepository):$(imageTag)" \
-                  --file Dockerfile \
                   worker/
 
   # ============================================================================

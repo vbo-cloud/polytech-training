@@ -89,6 +89,12 @@ Utiliser `Cache@2` pour les paquets NuGet (`~/.nuget/packages`), pour accélére
 
 La stage Deploy doit dépendre explicitement du succès de la stage Test (`dependsOn: Test`, `condition: succeeded()`), pas seulement de Build. Un déploiement qui ignore l'échec des tests annule l'intérêt de les avoir.
 
+## `az acr build` : `--file` explicite vs contexte
+
+**Un `--file` explicite ne se résout pas relatif au contexte (dernier argument positionnel), contrairement à ce que suggère l'aide de la commande.** Il se résout relatif au répertoire de travail de la CLI. Seule la valeur par défaut (`--file` omis, `Dockerfile` implicite) est jointe au contexte par la CLI elle-même (`_check_local_docker_file` / `acr_build` dans `azure/cli/command_modules/acr/build.py`, dépôt `Azure/azure-cli`).
+
+Constaté sur ce projet : `az acr build --file Dockerfile worker/`, exécuté depuis la racine du dépôt (répertoire de travail par défaut d'une tâche `AzureCLI@2` sans `workingDirectory` déclaré), cherchait `./Dockerfile` à la racine au lieu de `worker/Dockerfile` — `ERROR: Unable to find 'Dockerfile'.`, alors que le même Dockerfile compile sans problème en local (`docker compose build`). Le correctif le plus simple : omettre `--file` et laisser le comportement par défaut joindre `Dockerfile` au contexte. Si un nom de fichier différent de `Dockerfile` est un jour nécessaire, le poser explicitement avec son chemin complet depuis la racine du dépôt (`--file worker/Dockerfile.prod`), jamais relatif au contexte.
+
 ## Environnements et approbations
 
 Pour tout déploiement visible des utilisateurs, utiliser un `environment:` Azure DevOps avec une approbation manuelle — bonne pratique même sur un projet de démonstration.
