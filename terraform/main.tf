@@ -108,9 +108,9 @@ resource "azurerm_managed_redis" "redis" {
   # la Web App, qui l'atteint par l'intégration VNET.
   public_network_access = "Disabled"
 
-  # Bloc obligatoire à la création, même vide : la base par défaut du cache.
-  # `geo_replication_group_name` ne s'applique qu'à partir de Balanced_B3,
-  # sans objet ici.
+  # Bloc obligatoire à la création, quel que soit son contenu : la base par
+  # défaut du cache. `geo_replication_group_name` ne s'applique qu'à partir de
+  # Balanced_B3, sans objet ici.
   default_database {
     # Azure Managed Redis n'active que Microsoft Entra ID par défaut à la
     # création (« secure by default », documenté par Microsoft) — la clé
