@@ -187,7 +187,7 @@ stages:
       - job: Terraform
         displayName: Plan and apply the infrastructure
         steps:
-          - script: |
+          - bash: |
               set -euo pipefail
               curl -fsSL -o /tmp/terraform.zip \
                 "https://releases.hashicorp.com/terraform/$(terraformVersion)/terraform_$(terraformVersion)_linux_amd64.zip"
