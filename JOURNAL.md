@@ -361,3 +361,25 @@ Un log par branche, écrit avant chaque PR. Sert à retracer *pourquoi* chaque c
 - **`az acr build` échoue là où `docker build` ne voyait rien.** `az acr build` empaquette le contexte local en tar en respectant `.dockerignore`, puis l'envoie à un service de build distant qui cherche ensuite dedans le fichier passé à `--file` — le Dockerfile doit donc faire partie de l'archive envoyée. `docker build`/`docker compose build` local, eux, lisent le Dockerfile directement sur le disque local, indépendamment de ce que `.dockerignore` exclut du contexte. La même ligne était inoffensive dans un cas et fatale dans l'autre, ce qui explique pourquoi le défaut a survécu sans incident depuis l'entrée #1 jusqu'au premier run réel du pipeline.
 
 **Correction ultérieure** : ce mécanisme s'est révélé faux — voir entrée #15. `az acr build` ré-ajoute toujours le Dockerfile au tar envoyé, peu importe `.dockerignore` ; ce commit était un no-op inoffensif, pas le vrai correctif. L'erreur a persisté à l'identique après ce merge ; la vraie cause portait sur `--file`.
+
+---
+
+## #15 — fix/acr-build-file-path
+
+**Contexte avant** : `fix/worker-dockerignore-excludes-dockerfile` (entrée #14) venait d'être mergée dans `dev`, avec pour diagnostic que `worker/.dockerignore` excluait `Dockerfile` du tar envoyé à `az acr build`. Le merge a déclenché un nouveau run réel du pipeline, qui a échoué au stage `Publish` sur exactement la même erreur : « ERROR: Unable to find 'Dockerfile'. ». Le correctif de l'entrée #14 n'avait donc rien réparé.
+
+**Objectif** : trouver la vraie cause de cette erreur et faire à nouveau passer un run réel du pipeline au stage `Publish`.
+
+**Ce qui a été fait** :
+
+- Lecture directe du code source d'`az acr build` sur GitHub (`azure/cli/command_modules/acr/build.py` et `_archive_utils.py`, dépôt `Azure/azure-cli`) : `_pack_source_code` ré-ajoute toujours le Dockerfile au tar envoyé, indépendamment de `.dockerignore` — le diagnostic de l'entrée #14 ne pouvait donc jamais expliquer l'erreur.
+- Vraie cause identifiée : dans `acr_build`, un `--file` **explicite** n'est pas joint au contexte (`source_location`) — seul le comportement par défaut (`--file` omis) l'est, via `os.path.join(source_location, "Dockerfile")`. Le pipeline appelait `az acr build --file Dockerfile worker/` sans `workingDirectory` déclaré sur la tâche `AzureCLI@2` (donc cwd = racine du dépôt), et la vérification locale `_check_local_docker_file` cherchait `./Dockerfile` à la racine au lieu de `worker/Dockerfile`.
+- `azure-pipelines.yml` : retrait de l'argument `--file Dockerfile`, pour laisser le comportement par défaut de la CLI faire le join correct avec le contexte `worker/`. Commentaire YAML précédent (qui affirmait l'inverse du vrai comportement) corrigé.
+- `.claude/skills/docker-conventions/SKILL.md` : le paragraphe ajouté par l'entrée #14 (basé sur la fausse hypothèse `.dockerignore`) réécrit pour refléter la vraie mécanique, avec renvoi vers `azure-pipelines-conventions`.
+- `.claude/skills/azure-pipelines-conventions/SKILL.md` : nouvelle section documentant le piège réel du `--file` explicite d'`az acr build`.
+- Entrée #14 de `JOURNAL.md` complétée (paragraphe « Correction ultérieure », sans réécriture de l'historique) renvoyant vers cette entrée.
+- Une première passe `reviewer` a remonté un point bloquant — formulation contradictoire entre le commentaire YAML (« règle non documentée ») et la fiche de conventions sur le caractère documenté ou non du comportement du `--file` — et un avertissement — absence de renvoi dans l'entrée #14. Les deux corrigés dans le commit `ecf99f7`. Deuxième passe `reviewer` : aucun retour.
+
+**Décisions techniques** :
+
+- **Le vrai correctif n'a été trouvé qu'en lisant le code source réel de l'outil en cause, après qu'un diagnostic plausible et une revue `reviewer` propre se soient révélés faux.** L'entrée #14 avait un raisonnement cohérent (`.dockerignore` exclut `Dockerfile`, le tar envoyé au service de build distant ne l'aurait pas contenu) et une passe `reviewer` sans retour — rien dans ce processus ne pouvait détecter l'erreur, parce que rien n'avait vérifié le correctif contre un run réel du pipeline avant de conclure. Un diagnostic plausible et une revue de code cohérente ne prouvent pas la cause réelle : seul le rejeu du run qui a produit l'erreur originale le fait. Ici, le rejeu (déclenché par le merge de l'entrée #14) a produit l'erreur identique, signal sans ambiguïté que le correctif précédent était un no-op — ce qui a mené à lire directement le code source d'`az acr build` plutôt qu'à formuler une nouvelle hypothèse par déduction.
